@@ -61,7 +61,7 @@
 
 ### M2 — 接入 Qwen3-ASR（MLX）
 
-详细方案见 [docs/M2.md](docs/M2.md)。调研结论（2026-07）：直接依赖 speech-swift（成熟的 MLX Swift 实现），不自行移植；开源版**无** context/hotword 偏置（API 版独有），热词继续走精修层。
+详细方案见 [docs/M2.md](docs/M2.md)。调研结论（2026-07）：直接依赖 speech-swift（成熟的 MLX Swift 实现），不自行移植；开源版**支持** context 偏置（prompt 模板 system 槽位，speech-swift 已暴露 `context` 参数），光标前文本/用户词库可直接喂 ASR。
 
 - [ ] ASR 后端协议化（`ASRBackend` protocol）：SpeechAnalyzer / Qwen3-ASR 可切换
 - [ ] 集成 speech-swift：Qwen3-ASR 1.7B 4-bit 默认档，0.6B 低配档；模型下载/删除接入设置 UI（含 HF 镜像配置）

@@ -1,11 +1,24 @@
 import AVFoundation
 import Speech
 
-/// 一次录音会话对应一个 TranscriberSession（SpeechAnalyzer 流式转写）。
+/// 系统 SpeechAnalyzer 后端：零下载、全离线的基线引擎。
+final class SpeechAnalyzerBackend: ASRBackend {
+    let id: ASRBackendID = .speechAnalyzer
+
+    func prepareModel(localeID: String) async throws {
+        try await SpeechAnalyzerSession.ensureModel(localeID: localeID)
+    }
+
+    func makeSession() -> ASRSession {
+        SpeechAnalyzerSession()
+    }
+}
+
+/// 一次录音会话对应一个 SpeechAnalyzerSession（SpeechAnalyzer 流式转写）。
 ///
 /// 线程模型：`feed(_:)` 在音频线程调用；音频缓冲在 analyzer 格式确定前先入队，
 /// 确定后统一冲刷，因此录音可以先于 analyzer 就绪启动，不丢首音节。
-final class TranscriberSession {
+final class SpeechAnalyzerSession: ASRSession {
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
@@ -21,6 +34,9 @@ final class TranscriberSession {
 
     /// 转写文本更新（已定稿 + 未定稿），在 MainActor 上回调。
     var onUpdate: (@MainActor (String) -> Void)?
+
+    /// SpeechAnalyzer 不支持识别偏置，忽略。
+    var contextHint: String?
 
     /// NSLock 的同步作用域封装，可安全地从 async 上下文调用。
     private func withState<T>(_ body: () -> T) -> T {
@@ -109,16 +125,17 @@ final class TranscriberSession {
         convertAndYield(buffer)
     }
 
-    /// 结束输入并等待定稿，返回完整转写文本。
-    func finish() async throws -> String {
+    /// 结束输入并等待定稿，返回完整转写结果。
+    func finish() async throws -> ASRResult {
         inputContinuation?.finish()
         try await withTimeout(seconds: 10) { [analyzer] in
             try await analyzer?.finalizeAndFinishThroughEndOfInput()
         }
         await resultsTask?.value
-        return withState {
+        let text = withState {
             (finalizedText + volatileText).trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        return ASRResult(text: text, segments: nil)
     }
 
     func cancel() async {

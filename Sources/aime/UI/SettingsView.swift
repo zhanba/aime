@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @AppStorage(SettingsKey.asrBackend) private var asrBackend = ASRBackendID.speechAnalyzer.rawValue
+    @AppStorage(SettingsKey.qwen3ModelID) private var qwen3ModelID = Qwen3ModelChoice.small4bit.rawValue
     @AppStorage(SettingsKey.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
     @AppStorage(SettingsKey.localeID) private var localeID = "zh_CN"
     @AppStorage(SettingsKey.apiBaseURL) private var apiBaseURL = "https://api.deepseek.com/v1"
@@ -23,6 +25,23 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("语音输入") {
+                Picker("识别引擎", selection: $asrBackend) {
+                    ForEach(ASRBackendID.allCases) { backend in
+                        Text(backend.displayName).tag(backend.rawValue)
+                    }
+                }
+                if asrBackend == ASRBackendID.qwen3ASR.rawValue {
+                    Picker("Qwen3 模型档位", selection: $qwen3ModelID) {
+                        ForEach(Qwen3ModelChoice.allCases) { choice in
+                            Text(choice.displayName).tag(choice.rawValue)
+                        }
+                    }
+                    if let status = state.modelDownloadStatus {
+                        Label(status, systemImage: "arrow.down.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Picker("按住说话快捷键", selection: $hotkey) {
                     ForEach(HotkeyChoice.allCases) { choice in
                         Text(choice.displayName).tag(choice.rawValue)

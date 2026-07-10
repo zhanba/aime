@@ -2,6 +2,8 @@ import Foundation
 
 /// UserDefaults 键名。SwiftUI 视图用 @AppStorage 绑定同名键，逻辑层通过 `Settings` 读取。
 enum SettingsKey {
+    static let asrBackend = "asrBackend"
+    static let qwen3ModelID = "qwen3ModelID"
     static let apiBaseURL = "apiBaseURL"
     static let apiModel = "apiModel"
     static let apiKey = "apiKey" // TODO: M2 迁移到 Keychain
@@ -45,7 +47,24 @@ enum InjectionMethod: String, CaseIterable, Identifiable {
 }
 
 /// 逻辑层的只读设置快照。
+/// Qwen3-ASR 可选档位（HF 上的 MLX 转换版）
+enum Qwen3ModelChoice: String, CaseIterable, Identifiable {
+    case small4bit = "aufklarer/Qwen3-ASR-0.6B-MLX-4bit"
+    case large8bit = "aufklarer/Qwen3-ASR-1.7B-MLX-8bit"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .small4bit: return "0.6B 4-bit（约 400MB，低配机型）"
+        case .large8bit: return "1.7B 8-bit（约 1.8GB，质量更高）"
+        }
+    }
+}
+
 struct Settings {
+    var asrBackend: ASRBackendID
+    var qwen3ModelID: String
     var apiBaseURL: String
     var apiModel: String
     var apiKey: String
@@ -59,6 +78,8 @@ struct Settings {
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
+            SettingsKey.asrBackend: ASRBackendID.speechAnalyzer.rawValue,
+            SettingsKey.qwen3ModelID: Qwen3ModelChoice.small4bit.rawValue,
             SettingsKey.apiBaseURL: "https://api.deepseek.com/v1",
             SettingsKey.apiModel: "deepseek-chat",
             SettingsKey.apiKey: "",
@@ -75,6 +96,8 @@ struct Settings {
     static func current() -> Settings {
         let d = UserDefaults.standard
         return Settings(
+            asrBackend: ASRBackendID(rawValue: d.string(forKey: SettingsKey.asrBackend) ?? "") ?? .speechAnalyzer,
+            qwen3ModelID: d.string(forKey: SettingsKey.qwen3ModelID) ?? Qwen3ModelChoice.small4bit.rawValue,
             apiBaseURL: d.string(forKey: SettingsKey.apiBaseURL) ?? "https://api.deepseek.com/v1",
             apiModel: d.string(forKey: SettingsKey.apiModel) ?? "deepseek-chat",
             apiKey: d.string(forKey: SettingsKey.apiKey) ?? "",

@@ -26,14 +26,17 @@ final class AppState: ObservableObject {
     @Published var micGranted = false
     @Published var accessibilityGranted = false
     @Published var modelReady = false
+    /// Qwen3 模型下载进度文案（nil 表示无下载进行中）
+    @Published var modelDownloadStatus: String?
 
     private let overlay = OverlayController()
     private let hotkey = HotkeyMonitor()
     private var recorder: AudioRecorder?
-    private var transcriberSession: TranscriberSession?
+    private var asrSession: ASRSession?
     private var contextSnapshot: ContextSnapshot?
     private var sessionCounter = 0
     private var activeHotkeyChoice: HotkeyChoice?
+    private var activeBackendID: ASRBackendID?
 
     // MARK: - 启动
 
@@ -49,7 +52,10 @@ final class AppState: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.reloadHotkeyIfNeeded() }
+            Task { @MainActor in
+                self?.reloadHotkeyIfNeeded()
+                self?.reloadBackendIfNeeded()
+            }
         }
 
         Task {
@@ -72,11 +78,26 @@ final class AppState: ObservableObject {
         hotkey.start(choice: choice)
     }
 
+    /// 引擎或模型档位切换后重新准备模型。
+    private var activeQwenModelID: String?
+
+    private func reloadBackendIfNeeded() {
+        let settings = Settings.current()
+        let backendChanged = settings.asrBackend != activeBackendID
+        let modelChanged = settings.asrBackend == .qwen3ASR && settings.qwen3ModelID != activeQwenModelID
+        guard backendChanged || modelChanged, phase == .idle || phase == .preparingModel else { return }
+        Task { await prepareModel() }
+    }
+
     private func prepareModel() async {
-        let localeID = Settings.current().localeID
+        let settings = Settings.current()
+        activeBackendID = settings.asrBackend
+        activeQwenModelID = settings.qwen3ModelID
+        let backend = ASRBackendRegistry.shared.backend(for: settings.asrBackend)
         do {
             phase = .preparingModel
-            try await TranscriberSession.ensureModel(localeID: localeID)
+            modelReady = false
+            try await backend.prepareModel(localeID: settings.localeID)
             modelReady = true
             phase = .idle
         } catch {
@@ -114,11 +135,15 @@ final class AppState: ObservableObject {
         liveTranscript = ""
         finalText = ""
 
-        let session = TranscriberSession()
+        let session = ASRBackendRegistry.shared.backend(for: settings.asrBackend).makeSession()
         session.onUpdate = { [weak self] text in
             self?.liveTranscript = text
         }
-        transcriberSession = session
+        // 识别偏置：光标前文本喂给支持 context 的后端（Qwen3-ASR）
+        if settings.contextEnabled, let before = contextSnapshot?.textBeforeCursor, !before.isEmpty {
+            session.contextHint = String(before.suffix(200))
+        }
+        asrSession = session
 
         let recorder = AudioRecorder()
         recorder.onBuffer = { [weak session] buffer in
@@ -156,7 +181,7 @@ final class AppState: ObservableObject {
         audioLevel = 0
         phase = .transcribing
 
-        guard let session = transcriberSession else {
+        guard let session = asrSession else {
             phase = .idle
             overlay.hide()
             return
@@ -164,9 +189,9 @@ final class AppState: ObservableObject {
 
         Task {
             do {
-                let raw = try await session.finish()
+                let raw = try await session.finish().text
                 guard self.sessionCounter == sessionID else { return }
-                self.transcriberSession = nil
+                self.asrSession = nil
 
                 guard !raw.isEmpty else {
                     self.fail("没有听到内容")
@@ -202,7 +227,7 @@ final class AppState: ObservableObject {
                 }
             } catch {
                 guard self.sessionCounter == sessionID else { return }
-                self.transcriberSession = nil
+                self.asrSession = nil
                 self.fail("转写失败：\(error.localizedDescription)")
             }
         }
@@ -214,8 +239,8 @@ final class AppState: ObservableObject {
         recorder?.stop()
         recorder = nil
         audioLevel = 0
-        let session = transcriberSession
-        transcriberSession = nil
+        let session = asrSession
+        asrSession = nil
         Task { await session?.cancel() }
         phase = .idle
         overlay.hide()
