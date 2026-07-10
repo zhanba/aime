@@ -46,6 +46,13 @@ Sources/aime/
 - 语音转写完全在本地（Apple SpeechAnalyzer），音频不离开设备。
 - 只有配置了 API Key 时，**转写文本**（及开启上下文时光标前的文本）才会发送到你自己配置的 endpoint；精修请求进行中浮层会显示"已读取上下文"指示。
 
+## Qwen3-ASR 模型下载慢（国内网络）
+
+模型权重从 HuggingFace CDN 下载，单流速度可能很慢。手动加速方式：用多线程工具（aria2c/分段 curl）下载模型文件，放进
+`~/Library/Application Support/aime/models/<org>/<name>/`（如 `aufklarer/Qwen3-ASR-1.7B-MLX-8bit`），
+需要的文件：`config.json`、`model.safetensors`（或分片 + `model.safetensors.index.json`）、`vocab.json`、`merges.txt`、`tokenizer_config.json`。
+目录里存在 `.safetensors` 后，应用会自动走离线模式，不再发起网络请求。
+
 ## M1 已知取舍
 
 - Silero VAD 未接入（按住说话模式下由用户控制起止，电平仅用于动画）；VAD 将在 M2 作为 Qwen3-ASR 的幻觉前置过滤引入。

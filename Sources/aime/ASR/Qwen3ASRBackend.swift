@@ -40,10 +40,15 @@ actor Qwen3Inference {
         if loadedModelID == modelID, model != nil { return }
         model = nil // 先释放旧模型再加载，避免两份权重同时驻留
         loadedModelID = nil
+        let modelDir = Self.modelDir(for: modelID)
+        // 权重已在本地时走离线模式：否则每次启动都会对每个文件向 HF 发 HEAD 校验，
+        // 网络差时 prepareModel 会长时间卡住甚至失败
+        let hasWeights = (try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil))?
+            .contains { $0.pathExtension == "safetensors" } ?? false
         let loaded = try await Qwen3ASRModel.fromPretrained(
             modelId: modelID,
-            cacheDir: Self.modelDir(for: modelID),
-            offlineMode: false,
+            cacheDir: modelDir,
+            offlineMode: hasWeights,
             progressHandler: { progress, status in
                 Task { @MainActor in
                     AppState.shared.modelDownloadStatus = progress < 1.0

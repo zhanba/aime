@@ -35,10 +35,14 @@ let cacheDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .
     .appendingPathComponent(modelID, isDirectory: true)
 try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
 
+let hasWeights = (try? FileManager.default.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: nil))?
+    .contains { $0.pathExtension == "safetensors" } ?? false
+
 let loadBegan = Date()
 let model = try await Qwen3ASRModel.fromPretrained(
     modelId: modelID,
     cacheDir: cacheDir,
+    offlineMode: hasWeights,
     progressHandler: { progress, status in
         FileHandle.standardError.write(Data("\r\(status) \(Int(progress * 100))%".utf8))
     }
