@@ -20,7 +20,7 @@
 | 语言栈 | Swift 全栈 | SwiftUI + IMKit + 纯 Swift Package 核心（不依赖 AppKit，保留移植性） |
 | UI | SwiftUI 设置中心 + AppKit 自绘候选窗/浮层（NSPanel） | |
 | 本地推理 | MLX Swift（进程内嵌入，无 Python 运行时） | |
-| 默认 ASR | **Qwen3-ASR**（0.6B / 1.7B，Apache 2.0，2026-01 开源） | 1.7B 4-bit ≈1GB 常驻；已有 MLX/Swift 移植可参考 |
+| 默认 ASR | **Qwen3-ASR**（0.6B / 1.7B，Apache 2.0，2026-01 开源） | 经 speech-swift 接入 aufklarer MLX 转换版：0.6B 4-bit（~700MB，默认）/ 1.7B 8-bit（~2.4GB） |
 | ASR 基线 | Apple SpeechAnalyzer / SpeechTranscriber（macOS 26） | M1 阶段零依赖跑通全链路 |
 | 云端 LLM | OpenAI 兼容 API（DeepSeek / OpenRouter / 本地 Ollama 均可配） | |
 | 本地 LLM（后期） | Qwen3 系 1–3B 微调 + 拼音约束解码（MLX 自定义 sampler） | 与 Qwen3-ASR 共享工具链 |
@@ -44,31 +44,40 @@
 
 ## 里程碑
 
-### M1 — 语音管线 MVP（目标：2–3 周出可日用 demo）
+> **当前状态（2026-07-10）**：M1 ✅ 完成并日常可用；M2 进行中——Qwen3-ASR 双档位已接入、context 偏置已验证，剩 VAD 前置（W3）、置信度（W4）、daemon 拆分（W5）、测试集评测（W6）。下一步：W3。
+
+### M1 — 语音管线 MVP ✅（2026-07-10 完成，commit `4750704`）
 
 不写 IME，工程风险最低，验证"ASR + LLM 精修"的体验增益。
 
-- [ ] menu bar app 骨架（SwiftUI）+ 全局快捷键（按住说话）
-- [ ] 音频采集 + Silero VAD
-- [ ] SpeechAnalyzer 基线转写
-- [ ] LLM API 精修层：标点、同音字纠错、去填充词、可选书面化
-- [ ] 上下文采集：Accessibility API 读光标前文本 + 当前应用名，注入精修 prompt
-- [ ] 文本注入（CGEvent / 剪贴板粘贴回退）
-- [ ] 语音浮层：录音电平 → 转写中 → 精修中 → 完成，四态
-- [ ] 隐私指示：请求携带上下文时浮层显示图标
+- [x] menu bar app 骨架（SwiftUI）+ 全局快捷键（按住说话，右 Option/右 Command/Fn 可选）
+- [x] 音频采集（AVAudioEngine + RMS 电平；Silero VAD 移入 M2-W3，按住说话模式下起止由用户控制）
+- [x] SpeechAnalyzer 基线转写（流式，实时预览进浮层）
+- [x] LLM API 精修层：标点、同音字纠错、去填充词、可选书面化；未配 Key 时纯本地
+- [x] 上下文采集：Accessibility API 读光标前文本 + 当前应用名，注入精修 prompt
+- [x] 文本注入（粘贴+剪贴板保存恢复 / 模拟键入，可选）
+- [x] 语音浮层：录音电平 → 转写中 → 精修中 → 完成，四态非激活 NSPanel
+- [x] 隐私指示：请求携带上下文时浮层显示图标
 
-**验收**：日常听写可用；中英混说句子经精修后错误率明显低于裸转写（自建 50 句测试集对比）。
+**验收**：日常听写可用 ✅；50 句测试集的量化对比未做（并入 M2-W6 一起做）。
 
-### M2 — 接入 Qwen3-ASR（MLX）
+### M2 — 接入 Qwen3-ASR（MLX）🔶 进行中（W1/W2 完成，commit `25ea645`/`69ea7d2`）
 
-详细方案见 [docs/M2.md](docs/M2.md)。调研结论（2026-07）：直接依赖 speech-swift（成熟的 MLX Swift 实现），不自行移植；开源版**支持** context 偏置（prompt 模板 system 槽位，speech-swift 已暴露 `context` 参数），光标前文本/用户词库可直接喂 ASR。
+详细方案见 [docs/M2.md](docs/M2.md)。调研结论（2026-07）：直接依赖 speech-swift（成熟的 MLX Swift 实现），不自行移植；开源版**支持** context 偏置（prompt 模板 system 槽位，speech-swift 已暴露 `context` 参数），光标前文本/用户词库可直接喂 ASR——已实测生效，但热词精确命中率依赖措辞，待调优。
 
-- [ ] ASR 后端协议化（`ASRBackend` protocol）：SpeechAnalyzer / Qwen3-ASR 可切换
-- [ ] 集成 speech-swift：Qwen3-ASR 1.7B 4-bit 默认档，0.6B 低配档；模型下载/删除接入设置 UI（含 HF 镜像配置）
-- [ ] VAD 前置过滤（speech-swift 自带 Silero 系）+ 幻觉后置检测（重复 n-gram、长度比异常）
-- [ ] 流式转写；词级置信度尽力而为（取决于上游是否暴露 logprobs，不设为出口条件）
-- [ ] daemon 拆分：模型推理与音频采集移入 aime-daemon，XPC 接口定型（进度紧张可顺延 M3）
-- [ ] aime-bench 评测 CLI + 50 句中英混说测试集：CER/WER、RTF、首字延迟、峰值内存
+- [x] W1 ASR 后端协议化（`ASRBackend`/`ASRSession`）：SpeechAnalyzer / Qwen3-ASR 设置中可切换
+- [x] W2 集成 speech-swift（锁 0.0.21）：0.6B 4-bit 默认档 / 1.7B 8-bit 高质量档；下载进度进设置 UI；本地有权重自动走离线模式（弱网不卡启动）
+  - [ ] 模型删除/磁盘占用 UI、HF 镜像 endpoint 配置（暂靠 README 的手动下载说明兜底）
+- [x] context 识别偏置端到端接通（光标前文本 → 模型 system 槽位）
+- [x] 幻觉后置检测（重复 n-gram、文本/时长比异常）
+- [ ] W3 VAD 前置过滤（speech-swift 自带 Silero 系）替代 RMS：掐首尾静音、长停顿分段、纯静音直接丢弃
+- [x] 流式预览（录音中自适应节奏局部重转写）
+- [ ] W4 词级置信度（取决于上游是否暴露 logprobs，不设为出口条件）
+- [ ] W5 daemon 拆分：模型推理与音频采集移入 aime-daemon，XPC 接口定型（进度紧张可顺延 M3）
+- [ ] W6 50 句中英混说测试集 + 指标补全（CER/WER、首字延迟、峰值内存）
+  - [x] aime-bench 评测 CLI 雏形（转写/耗时/RTF/context 对比）；实测 0.6B 预热后 RTF≈0.03、1.7B≈0.05–0.12，小样本中英混说全对
+
+**验收进度**：引擎可切换 ✅；实时率远优于目标（RTF≪1.0，本机）✅；混说质量对比 SpeechAnalyzer、静音零幻觉、M1 Air 下限机型基准——待 W3/W6。
 
 **验收**：中英混说质量优于 SpeechAnalyzer 基线（对照 SenseVoice 作参照）；M1 Air 上流式实时率 < 1.0。
 
