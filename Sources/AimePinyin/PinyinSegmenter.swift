@@ -16,20 +16,32 @@ public struct PinyinSegment: Equatable, Sendable {
 
 /// 单个音节及其备选。
 public struct Syllable: Equatable, Sendable {
-    /// 采信的音节（修复后的规范拼写）
+    /// 采信的音节（修复后的规范拼写；partial 时为已敲的前缀）
     public var text: String
     /// 用户实际敲的串（无修复时与 text 相同）
     public var typed: String
     /// 模糊音变体（合法音节）
     public var fuzzyAlternates: [String]
-    /// 是否经过键盘错误修复
-    public var repaired: Bool
+    /// 变换来源（exact/临近键/换位/漏敲/多敲/partial）
+    public var source: TransformSource
+    /// partial 时的可补全音节
+    public var completions: [String]
 
-    public init(text: String, typed: String, fuzzyAlternates: [String] = [], repaired: Bool = false) {
+    /// 是否经过修复类变换
+    public var repaired: Bool {
+        switch source {
+        case .exact, .partial: return false
+        default: return true
+        }
+    }
+
+    public init(text: String, typed: String, fuzzyAlternates: [String] = [],
+                source: TransformSource = .exact, completions: [String] = []) {
         self.text = text
         self.typed = typed
         self.fuzzyAlternates = fuzzyAlternates
-        self.repaired = repaired
+        self.source = source
+        self.completions = completions
     }
 }
 
@@ -50,8 +62,8 @@ enum QwertyAdjacency {
         "m": ["n", "j", "k"],
     ]
 
-    /// 生成 1-编辑修复候选：临近键单字符替换 + 相邻字符换位。
-    static func repairs(of typed: [Character]) -> [String] {
+    /// 临近键单字符替换候选
+    static func substitutionRepairs(of typed: [Character]) -> [String] {
         var results = Set<String>()
         for index in typed.indices {
             for neighbor in neighbors[typed[index]] ?? [] {
@@ -60,6 +72,13 @@ enum QwertyAdjacency {
                 results.insert(String(variant))
             }
         }
+        results.remove(String(typed))
+        return Array(results)
+    }
+
+    /// 相邻字符换位候选
+    static func transpositionRepairs(of typed: [Character]) -> [String] {
+        var results = Set<String>()
         for index in typed.indices.dropLast() {
             var variant = typed
             variant.swapAt(index, index + 1)
@@ -82,7 +101,7 @@ public enum PinyinSegmenter {
     }
 
     enum StepKind {
-        case syllable(text: String, typed: String, repaired: Bool)
+        case syllable(text: String, typed: String, source: TransformSource, completions: [String])
         case literal(String)
         case separator
     }
@@ -122,20 +141,48 @@ public enum PinyinSegmenter {
                 continue
             }
 
-            // 小写字母：尝试各长度的音节匹配与修复
-            let maxLength = min(PinyinTable.maxSyllableLength, count - position)
+            // 小写字母：尝试各长度的音节匹配与拼写变换
+            let maxLength = min(PinyinTable.maxSyllableLength + 1, count - position)
             for length in 1 ... maxLength {
                 let typed = String(chars[position ..< position + length])
+                let typedChars = Array(typed)
                 if PinyinTable.isValid(typed) {
                     let shortPenalty = length == 1 ? 0.35 : 0.0
-                    relax(position + length, cost: 1.0 + shortPenalty, from: position,
-                          kind: .syllable(text: typed, typed: typed, repaired: false))
-                } else if length >= 2 {
-                    // 键盘错误修复：临近键替换/相邻换位后合法 → 带惩罚接受
-                    for candidate in QwertyAdjacency.repairs(of: Array(typed)) where PinyinTable.isValid(candidate) {
-                        relax(position + length, cost: 1.0 + 1.6, from: position,
-                              kind: .syllable(text: candidate, typed: typed, repaired: true))
+                    relax(position + length, cost: TransformSource.exact.stepCost + shortPenalty, from: position,
+                          kind: .syllable(text: typed, typed: typed, source: .exact, completions: []))
+                    continue
+                }
+                // 临近键替换（含相邻换位，区分代价）
+                if length >= 2, length <= PinyinTable.maxSyllableLength {
+                    for candidate in QwertyAdjacency.substitutionRepairs(of: typedChars) where PinyinTable.isValid(candidate) {
+                        relax(position + length, cost: TransformSource.keyAdjacent.stepCost, from: position,
+                              kind: .syllable(text: candidate, typed: typed, source: .keyAdjacent, completions: []))
                     }
+                    for candidate in QwertyAdjacency.transpositionRepairs(of: typedChars) where PinyinTable.isValid(candidate) {
+                        relax(position + length, cost: TransformSource.transposition.stepCost, from: position,
+                              kind: .syllable(text: candidate, typed: typed, source: .transposition, completions: []))
+                    }
+                }
+                // 漏敲：typed 是某音节挖掉一个字母的变体
+                if length >= 1, length <= PinyinTable.maxSyllableLength - 1,
+                   let fullSyllables = SpellingTransforms.deletionMap[typed] {
+                    for candidate in fullSyllables.prefix(3) {
+                        relax(position + length, cost: TransformSource.deletion.stepCost, from: position,
+                              kind: .syllable(text: candidate, typed: typed, source: .deletion, completions: []))
+                    }
+                }
+                // 多敲：typed 删掉一个字母后合法
+                if length >= 3 {
+                    for candidate in SpellingTransforms.insertionRepairs(of: typedChars) {
+                        relax(position + length, cost: TransformSource.insertion.stepCost, from: position,
+                              kind: .syllable(text: candidate, typed: typed, source: .insertion, completions: []))
+                    }
+                }
+                // 句尾 partial：到 buffer 末尾且是某音节的真前缀
+                if position + length == count, SpellingTransforms.prefixSet.contains(typed) {
+                    relax(count, cost: TransformSource.partial.stepCost, from: position,
+                          kind: .syllable(text: typed, typed: typed, source: .partial,
+                                          completions: SpellingTransforms.completions(of: typed)))
                 }
             }
 
@@ -174,13 +221,24 @@ public enum PinyinSegmenter {
 
         for step in steps {
             switch step {
-            case .syllable(let text, let typed, let repaired):
+            case .syllable(let text, let typed, let source, let completions):
                 flushLiteral()
+                var alternates = source == .partial ? [] : FuzzyExpander.variants(of: text, enabledRuleIDs: enabledFuzzyRuleIDs)
+                // 漏敲/多敲的其他同代价修复也作为备选（如 zhng → zhang/zheng/zhong）
+                switch source {
+                case .deletion:
+                    alternates += (SpellingTransforms.deletionMap[typed] ?? []).filter { $0 != text }
+                case .insertion:
+                    alternates += SpellingTransforms.insertionRepairs(of: Array(typed)).filter { $0 != text }
+                default:
+                    break
+                }
                 syllableRun.append(Syllable(
                     text: text,
                     typed: typed,
-                    fuzzyAlternates: FuzzyExpander.variants(of: text, enabledRuleIDs: enabledFuzzyRuleIDs),
-                    repaired: repaired
+                    fuzzyAlternates: alternates,
+                    source: source,
+                    completions: completions
                 ))
             case .literal(let text):
                 flushSyllables()

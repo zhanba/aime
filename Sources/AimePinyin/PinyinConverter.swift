@@ -34,8 +34,17 @@ public enum PinyinPromptBuilder {
             case .pinyin(let syllables):
                 let inner = syllables.map { syllable -> String in
                     var note = syllable.text
-                    if syllable.repaired {
+                    switch syllable.source {
+                    case .exact:
+                        break
+                    case .keyAdjacent, .transposition:
                         note += "(疑似手误,实际敲的是\(syllable.typed))"
+                    case .deletion:
+                        note += "(疑似漏敲一个字母,实际敲的是\(syllable.typed))"
+                    case .insertion:
+                        note += "(疑似多敲一个字母,实际敲的是\(syllable.typed))"
+                    case .partial:
+                        note = "\(syllable.typed)(最后一个音节未打完,可能是:\(syllable.completions.joined(separator: "/")))"
                     }
                     if !syllable.fuzzyAlternates.isEmpty {
                         note += "(也可能是:\(syllable.fuzzyAlternates.joined(separator: "/")))"

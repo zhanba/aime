@@ -117,6 +117,49 @@ final class SegmenterTests: XCTestCase {
         }
     }
 
+    // MARK: 拼写变换：漏敲/多敲/句尾 partial
+
+    func testDeletionRepair() {
+        // zhngguo：zhong 漏敲 o
+        let segments = PinyinSegmenter.segment("zhngguo")
+        guard case .pinyin(let syllables) = segments[0].kind, syllables.count == 2 else {
+            return XCTFail("应切成两个音节: \(segments)")
+        }
+        XCTAssertEqual(syllables[0].source, .deletion)
+        XCTAssertTrue(["zhang", "zheng", "zhong"].contains(syllables[0].text))
+        // 其余同代价修复进备选
+        let all = [syllables[0].text] + syllables[0].fuzzyAlternates
+        XCTAssertTrue(all.contains("zhong"), "\(all)")
+        XCTAssertEqual(syllables[1].text, "guo")
+    }
+
+    func testInsertionRepair() {
+        // zhoongguo：zhong 多敲一个 o
+        let segments = PinyinSegmenter.segment("zhoongguo")
+        XCTAssertEqual(syllableTexts(segments), ["zhong", "guo"])
+        guard case .pinyin(let syllables) = segments[0].kind else { return XCTFail() }
+        XCTAssertEqual(syllables[0].source, .insertion)
+    }
+
+    func testTrailingPartialSyllable() {
+        // nihaosh：句尾 sh 未打完，不再是 literal
+        let segments = PinyinSegmenter.segment("nihaosh")
+        guard case .pinyin(let syllables) = segments[0].kind, syllables.count == 3 else {
+            return XCTFail("应为三音节段: \(segments)")
+        }
+        XCTAssertEqual(syllables[2].source, .partial)
+        XCTAssertEqual(syllables[2].typed, "sh")
+        XCTAssertFalse(syllables[2].completions.isEmpty)
+        XCTAssertTrue(syllables[2].completions.allSatisfy { $0.hasPrefix("sh") })
+    }
+
+    func testPartialOnlyAtEnd() {
+        // 中间的破碎串不按 partial 处理（xq 无解 → 修复或 literal，但不能吞掉后文）
+        let segments = PinyinSegmenter.segment("nihao")
+        guard case .pinyin(let syllables) = segments[0].kind else { return XCTFail() }
+        XCTAssertTrue(syllables.allSatisfy { $0.source == .exact })
+    }
+
     // MARK: prompt 构造
 
     func testPromptDescribe() {
