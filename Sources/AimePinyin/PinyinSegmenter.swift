@@ -258,6 +258,21 @@ public enum PinyinSegmenter {
 }
 
 public extension PinyinSegmenter {
+    /// 组合区的分词拼音展示串（主流输入法形态）："yuanshide" → "yuan shi de"，
+    /// literal 段原样，partial 尾巴原样。
+    static func displayString(of segments: [PinyinSegment]) -> String {
+        var parts: [String] = []
+        for segment in segments {
+            switch segment.kind {
+            case .literal(let text):
+                parts.append(text)
+            case .pinyin(let syllables):
+                parts.append(syllables.map(\.typed).joined(separator: " "))
+            }
+        }
+        return parts.joined(separator: " ")
+    }
+
     /// 边界歧义变体：n/g/元音在音节交界处的归属歧义（fangan = fan|gan vs fang|an）。
     /// DP 只保留单一最优路径会把另一种切法整个丢掉——这里补回，供
     /// 本地造句（双路 Viterbi 择优）、词候选合并、LLM prompt 与回验器使用。

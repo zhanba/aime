@@ -9,6 +9,7 @@ enum SettingsKey {
     static let fuzzyRules = "fuzzyRules"
     static let privacyBlockedApps = "privacyBlockedApps"
     static let pureLocalMode = "pureLocalMode"
+    static let compositionShowsPinyin = "compositionShowsPinyin"
     static let qwen3ModelID = "qwen3ModelID"
     static let apiBaseURL = "apiBaseURL"
     static let apiModel = "apiModel"
@@ -74,6 +75,7 @@ struct Settings {
     var fuzzyRuleIDs: Set<String>
     var privacyBlockedApps: [String]
     var pureLocalMode: Bool
+    var compositionShowsPinyin: Bool
     var qwen3ModelID: String
     var apiBaseURL: String
     var apiModel: String
@@ -93,6 +95,7 @@ struct Settings {
             SettingsKey.fuzzyRules: Array(FuzzyRule.defaultEnabled),
             SettingsKey.privacyBlockedApps: [String](),
             SettingsKey.pureLocalMode: false,
+            SettingsKey.compositionShowsPinyin: true,
             SettingsKey.qwen3ModelID: Qwen3ModelChoice.small4bit.rawValue,
             SettingsKey.apiBaseURL: "https://api.deepseek.com/v1",
             SettingsKey.apiModel: "deepseek-chat",
@@ -115,6 +118,7 @@ struct Settings {
             fuzzyRuleIDs: Set((d.array(forKey: SettingsKey.fuzzyRules) as? [String]) ?? Array(FuzzyRule.defaultEnabled)),
             privacyBlockedApps: (d.array(forKey: SettingsKey.privacyBlockedApps) as? [String]) ?? [],
             pureLocalMode: d.bool(forKey: SettingsKey.pureLocalMode),
+            compositionShowsPinyin: d.object(forKey: SettingsKey.compositionShowsPinyin) as? Bool ?? true,
             qwen3ModelID: d.string(forKey: SettingsKey.qwen3ModelID) ?? Qwen3ModelChoice.small4bit.rawValue,
             apiBaseURL: d.string(forKey: SettingsKey.apiBaseURL) ?? "https://api.deepseek.com/v1",
             apiModel: d.string(forKey: SettingsKey.apiModel) ?? "deepseek-chat",

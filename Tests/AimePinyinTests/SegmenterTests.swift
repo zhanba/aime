@@ -198,3 +198,21 @@ final class BoundaryAmbiguityTests: XCTestCase {
         XCTAssertEqual(PinyinVerifier.verify(candidate: "电脑", segments: segments), .reject)
     }
 }
+
+final class DisplayStringTests: XCTestCase {
+    func testSegmentedPinyinDisplay() {
+        XCTAssertEqual(
+            PinyinSegmenter.displayString(of: PinyinSegmenter.segment("yuanshide")),
+            "yuan shi de"
+        )
+        XCTAssertEqual(
+            PinyinSegmenter.displayString(of: PinyinSegmenter.segment("zheshiyigeAPIjiekou")),
+            "zhe shi yi ge API jie kou"
+        )
+        // partial 尾巴按原样敲入显示
+        XCTAssertEqual(
+            PinyinSegmenter.displayString(of: PinyinSegmenter.segment("nihaosh")),
+            "ni hao sh"
+        )
+    }
+}

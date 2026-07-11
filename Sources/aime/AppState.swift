@@ -102,6 +102,7 @@ final class AppState: ObservableObject {
             blockedApps: settings.privacyBlockedApps,
             pureLocalMode: settings.pureLocalMode
         )
+        SharedConfig.mirrorCompositionDisplay(showsPinyin: settings.compositionShowsPinyin)
     }
 
     private var frontmostBlocked: Bool {

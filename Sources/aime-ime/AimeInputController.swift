@@ -554,8 +554,17 @@ class AimeInputController: IMKInputController {
             ]))
         }
         if !rawBuffer.isEmpty {
-            let solid = llmFresh && llmVerdict == .pass
-            attributed.append(NSAttributedString(string: currentPreview, attributes: [
+            let text: String
+            let solid: Bool
+            if SharedConfig.compositionShowsPinyin {
+                // 主流形态：行内显示分词拼音，转换结果在候选栏
+                text = engineResult.map { PinyinSegmenter.displayString(of: $0.segments) } ?? rawBuffer
+                solid = false
+            } else {
+                text = currentPreview
+                solid = llmFresh && llmVerdict == .pass
+            }
+            attributed.append(NSAttributedString(string: text, attributes: [
                 .underlineStyle: solid
                     ? NSUnderlineStyle.single.rawValue
                     : NSUnderlineStyle.patternDot.union(.single).rawValue,

@@ -9,6 +9,7 @@ struct PinyinSettingsTab: View {
     @State private var conversionText = ""
     @State private var converting = false
     @StateObject private var lexicon = LexiconInstaller()
+    @AppStorage(SettingsKey.compositionShowsPinyin) private var compositionShowsPinyin = true
 
     var body: some View {
         Form {
@@ -51,6 +52,16 @@ struct PinyinSettingsTab: View {
                 Text("词库（白霜拼音）")
             } footer: {
                 Text("约 12MB，来自开源项目 rime-frost（GPL-3.0，人工校对注音 + 现代语料词频）。下载编译后本地整句与词候选即时可用；输入法切换时自动加载新词库。")
+            }
+
+            Section {
+                Picker("组合区显示", selection: $compositionShowsPinyin) {
+                    Text("分词拼音（yuan shi de，主流形态）").tag(true)
+                    Text("转换预览（原始的，即时看结果）").tag(false)
+                }
+                .pickerStyle(.radioGroup)
+            } footer: {
+                Text("两种模式下候选栏与空格上屏行为一致，只影响输入行内显示什么。")
             }
 
             Section("模糊音（按你的口音习惯勾选）") {

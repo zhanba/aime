@@ -33,6 +33,19 @@ public enum SharedConfig {
         if d.string(forKey: "localeID") != localeID { d.set(localeID, forKey: "localeID") }
     }
 
+    // MARK: - 组合区显示
+
+    /// true=显示分词拼音（主流形态，默认）；false=显示转换预览
+    public static var compositionShowsPinyin: Bool {
+        defaults.object(forKey: "compositionShowsPinyin") as? Bool ?? true
+    }
+
+    public static func mirrorCompositionDisplay(showsPinyin: Bool) {
+        if compositionShowsPinyin != showsPinyin {
+            defaults.set(showsPinyin, forKey: "compositionShowsPinyin")
+        }
+    }
+
     // MARK: - 隐私（P6）
 
     public static func mirrorPrivacyFromApp(blockedApps: [String], pureLocalMode: Bool) {
