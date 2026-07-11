@@ -59,6 +59,7 @@ class AimeInputController: IMKInputController {
     // MARK: - IMK 生命周期
 
     override func activateServer(_ sender: Any!) {
+        PinyinEngine.shared.reloadIfChanged() // app 侧可能刚装/删了词库
         resetAll()
     }
 

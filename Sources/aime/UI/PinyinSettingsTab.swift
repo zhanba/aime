@@ -8,6 +8,7 @@ struct PinyinSettingsTab: View {
     @State private var segmentationText = ""
     @State private var conversionText = ""
     @State private var converting = false
+    @StateObject private var lexicon = LexiconInstaller()
 
     var body: some View {
         Form {
@@ -25,6 +26,31 @@ struct PinyinSettingsTab: View {
                 }
             } footer: {
                 Text("整句转换用「精修」页配置的同一个 LLM API。空格上屏首选，回车上屏原始拼音，数字选候选，Esc 取消。双拼方案 M3.5 提供。")
+            }
+
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(lexicon.installedInfo ?? "未安装（词候选与本地整句不可用，仅 LLM 模式）")
+                        statusLine
+                    }
+                    Spacer()
+                    switch lexicon.phase {
+                    case .downloading, .compiling:
+                        ProgressView().controlSize(.small)
+                    default:
+                        Button(lexicon.installedInfo == nil ? "下载词库" : "更新词库") {
+                            lexicon.install()
+                        }
+                        if lexicon.installedInfo != nil {
+                            Button("删除", role: .destructive) { lexicon.delete() }
+                        }
+                    }
+                }
+            } header: {
+                Text("词库（白霜拼音）")
+            } footer: {
+                Text("约 12MB，来自开源项目 rime-frost（GPL-3.0，人工校对注音 + 现代语料词频）。下载编译后本地整句与词候选即时可用；输入法切换时自动加载新词库。")
             }
 
             Section("模糊音（按你的口音习惯勾选）") {
@@ -68,6 +94,20 @@ struct PinyinSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private var statusLine: some View {
+        switch lexicon.phase {
+        case .idle:
+            EmptyView()
+        case .downloading(let text):
+            Text(text).font(.caption).foregroundStyle(.secondary)
+        case .compiling:
+            Text("编译词库…").font(.caption).foregroundStyle(.secondary)
+        case .failed(let message):
+            Text(message).font(.caption).foregroundStyle(.red)
+        }
     }
 
     private func runPlayground() {

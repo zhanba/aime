@@ -133,9 +133,22 @@ public final class PinyinEngine {
         didSet { composer?.singleCharDamp = singleCharDamp }
     }
 
+    private var lexiconURL = Lexicon.defaultURL
+    private var loadedMTime: Date?
+
     public func reloadLexicon(from url: URL = Lexicon.defaultURL) {
+        lexiconURL = url
         lexicon = Lexicon(url: url)
+        loadedMTime = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
         composer = lexicon.map { SentenceComposer(lexicon: $0, lambda: lambda, singleCharDamp: singleCharDamp) }
+    }
+
+    /// 词库文件被（另一进程）更新或删除后热重载。IME 在 activateServer 时调用，stat 一次开销可忽略。
+    public func reloadIfChanged() {
+        let mtime = (try? FileManager.default.attributesOfItem(atPath: lexiconURL.path)[.modificationDate]) as? Date
+        if mtime != loadedMTime {
+            reloadLexicon(from: lexiconURL)
+        }
     }
 
     public struct Result: Sendable {
