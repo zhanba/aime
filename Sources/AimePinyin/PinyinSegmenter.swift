@@ -223,8 +223,8 @@ public enum PinyinSegmenter {
             switch step {
             case .syllable(let text, let typed, let source, let completions):
                 flushLiteral()
-                var alternates = source == .partial ? [] : FuzzyExpander.variants(of: text, enabledRuleIDs: enabledFuzzyRuleIDs)
-                // 漏敲/多敲的其他同代价修复也作为备选（如 zhng → zhang/zheng/zhong）
+                // 漏敲/多敲的其他同代价修复优先于模糊音（同为"修复解释"，可信度更高）
+                var alternates: [String] = []
                 switch source {
                 case .deletion:
                     alternates += (SpellingTransforms.deletionMap[typed] ?? []).filter { $0 != text }
@@ -232,6 +232,10 @@ public enum PinyinSegmenter {
                     alternates += SpellingTransforms.insertionRepairs(of: Array(typed)).filter { $0 != text }
                 default:
                     break
+                }
+                if source != .partial {
+                    alternates += FuzzyExpander.variants(of: text, enabledRuleIDs: enabledFuzzyRuleIDs)
+                        .filter { !alternates.contains($0) }
                 }
                 syllableRun.append(Syllable(
                     text: text,

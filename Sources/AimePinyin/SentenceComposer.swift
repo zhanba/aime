@@ -35,7 +35,7 @@ public struct SentenceComposer {
             return list
         }
         list.append((syllable.text, syllable.source.credibility))
-        for alternate in syllable.fuzzyAlternates.prefix(2) {
+        for alternate in syllable.fuzzyAlternates.prefix(3) {
             list.append((alternate, syllable.source.credibility * 0.9))
         }
         return list
