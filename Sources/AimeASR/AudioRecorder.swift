@@ -2,17 +2,19 @@ import AVFoundation
 import Accelerate
 
 /// 麦克风采集。回调运行在音频线程，调用方自行处理线程切换。
-final class AudioRecorder {
+public final class AudioRecorder {
     private let engine = AVAudioEngine()
 
-    var onBuffer: ((AVAudioPCMBuffer) -> Void)?
-    var onLevel: ((Float) -> Void)?
+    public var onBuffer: ((AVAudioPCMBuffer) -> Void)?
+    public var onLevel: ((Float) -> Void)?
 
-    static func requestPermission() async -> Bool {
+    public init() {}
+
+    public static func requestPermission() async -> Bool {
         await AVCaptureDevice.requestAccess(for: .audio)
     }
 
-    func start() throws {
+    public func start() throws {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
@@ -27,7 +29,7 @@ final class AudioRecorder {
         try engine.start()
     }
 
-    func stop() {
+    public func stop() {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
     }
@@ -44,25 +46,15 @@ final class AudioRecorder {
     }
 }
 
-enum AimeError: LocalizedError {
-    case microphoneUnavailable
-    case localeUnsupported(String)
-    case transcriberNotReady
-    case llmHTTPError(Int, String)
-    case llmEmptyResponse
-
-    var errorDescription: String? {
-        switch self {
-        case .microphoneUnavailable:
-            return "麦克风不可用，请检查系统设置中的麦克风权限"
-        case .localeUnsupported(let id):
-            return "系统语音转写暂不支持语言 \(id)"
-        case .transcriberNotReady:
-            return "语音模型尚未就绪"
-        case .llmHTTPError(let code, let body):
-            return "LLM 请求失败（HTTP \(code)）：\(body.prefix(120))"
-        case .llmEmptyResponse:
-            return "LLM 返回了空结果"
+/// 超时保护：超时抛 CancellationError，避免 finalize 卡死整个会话。
+public func withTimeout(seconds: TimeInterval, _ work: @escaping @Sendable () async throws -> Void) async throws {
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        group.addTask { try await work() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw CancellationError()
         }
+        try await group.next()
+        group.cancelAll()
     }
 }

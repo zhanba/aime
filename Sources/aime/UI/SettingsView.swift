@@ -1,8 +1,10 @@
+import AimeASR
 import SwiftUI
 
 struct SettingsView: View {
     @AppStorage(SettingsKey.asrBackend) private var asrBackend = ASRBackendID.speechAnalyzer.rawValue
     @AppStorage(SettingsKey.qwen3ModelID) private var qwen3ModelID = Qwen3ModelChoice.small4bit.rawValue
+    @AppStorage(SettingsKey.useDaemon) private var useDaemon = false
     @AppStorage(SettingsKey.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
     @AppStorage(SettingsKey.localeID) private var localeID = "zh_CN"
     @AppStorage(SettingsKey.apiBaseURL) private var apiBaseURL = "https://api.deepseek.com/v1"
@@ -41,6 +43,7 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    modelDiskRow
                 }
                 Picker("按住说话快捷键", selection: $hotkey) {
                     ForEach(HotkeyChoice.allCases) { choice in
@@ -93,6 +96,23 @@ struct SettingsView: View {
                 }
             }
 
+            Section("后台推理服务（实验性）") {
+                Toggle("使用 aime-daemon 承载模型与录音", isOn: $useDaemon)
+                HStack {
+                    Text("状态：\(state.daemon.statusText) · 会话运行于 \(state.executionMode)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if state.daemon.approvalRequired {
+                        Button("去批准") { state.daemon.openLoginItemsSettings() }
+                    }
+                    Button("重新注册") { state.daemon.register() }
+                }
+                Text("开启后模型常驻后台进程，app 重启不用重新加载；首次使用需为 aime-daemon 单独授予麦克风权限。不可用时自动回退进程内运行。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("权限") {
                 permissionRow(
                     name: "麦克风",
@@ -111,6 +131,25 @@ struct SettingsView: View {
         .fixedSize(horizontal: false, vertical: true)
         .onAppear {
             NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    /// 当前 Qwen3 档位的磁盘占用与管理入口
+    @ViewBuilder
+    private var modelDiskRow: some View {
+        let usage = ModelStore.diskUsage(for: qwen3ModelID)
+        HStack {
+            Text("磁盘占用：\(ByteCountFormatter.string(fromByteCount: usage, countStyle: .file))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("打开模型目录") {
+                NSWorkspace.shared.open(ModelStore.baseDir)
+            }
+            Button("删除此模型", role: .destructive) {
+                ModelStore.delete(modelID: qwen3ModelID)
+            }
+            .disabled(usage == 0)
         }
     }
 

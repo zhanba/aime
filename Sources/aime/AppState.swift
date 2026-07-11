@@ -1,3 +1,4 @@
+import AimeASR
 import AppKit
 import SwiftUI
 
@@ -26,17 +27,21 @@ final class AppState: ObservableObject {
     @Published var micGranted = false
     @Published var accessibilityGranted = false
     @Published var modelReady = false
-    /// Qwen3 模型下载进度文案（nil 表示无下载进行中）
+    /// 模型下载/准备进度文案（nil 表示无进行中）
     @Published var modelDownloadStatus: String?
+    /// 会话实际运行的位置："daemon" / "in-process"
+    @Published var executionMode = "in-process"
+
+    let daemon = DaemonManager()
 
     private let overlay = OverlayController()
     private let hotkey = HotkeyMonitor()
-    private var recorder: AudioRecorder?
     private var asrSession: ASRSession?
     private var contextSnapshot: ContextSnapshot?
     private var sessionCounter = 0
     private var activeHotkeyChoice: HotkeyChoice?
     private var activeBackendID: ASRBackendID?
+    private var activeQwenModelID: String?
 
     // MARK: - 启动
 
@@ -58,6 +63,8 @@ final class AppState: ObservableObject {
             }
         }
 
+        daemon.bootstrap()
+
         Task {
             micGranted = await AudioRecorder.requestPermission()
             await prepareModel()
@@ -78,9 +85,6 @@ final class AppState: ObservableObject {
         hotkey.start(choice: choice)
     }
 
-    /// 引擎或模型档位切换后重新准备模型。
-    private var activeQwenModelID: String?
-
     private func reloadBackendIfNeeded() {
         let settings = Settings.current()
         let backendChanged = settings.asrBackend != activeBackendID
@@ -89,15 +93,39 @@ final class AppState: ObservableObject {
         Task { await prepareModel() }
     }
 
+    private func sessionConfig(contextHint: String? = nil) -> ASRSessionConfig {
+        let settings = Settings.current()
+        return ASRSessionConfig(
+            backend: settings.asrBackend,
+            localeID: settings.localeID,
+            qwen3ModelID: settings.qwen3ModelID,
+            contextHint: contextHint
+        )
+    }
+
+    /// 选择会话后端：daemon 可用且用户开启时走 XPC，否则进程内。
+    private func resolveBackend() async -> ASRBackend {
+        let settings = Settings.current()
+        if settings.useDaemon, await daemon.isHealthy() {
+            executionMode = "daemon"
+            return daemon.proxyBackend
+        }
+        executionMode = "in-process"
+        return ASRBackendRegistry.shared.backend(for: settings.asrBackend)
+    }
+
     private func prepareModel() async {
         let settings = Settings.current()
         activeBackendID = settings.asrBackend
         activeQwenModelID = settings.qwen3ModelID
-        let backend = ASRBackendRegistry.shared.backend(for: settings.asrBackend)
+        let backend = await resolveBackend()
+        backend.onProgress = { [weak self] status in
+            Task { @MainActor in self?.modelDownloadStatus = status }
+        }
         do {
             phase = .preparingModel
             modelReady = false
-            try await backend.prepareModel(localeID: settings.localeID)
+            try await backend.prepareModel(config: sessionConfig())
             modelReady = true
             phase = .idle
         } catch {
@@ -124,6 +152,7 @@ final class AppState: ObservableObject {
 
     private func startSession() {
         sessionCounter += 1
+        let sessionID = sessionCounter
         let settings = Settings.current()
 
         // 先采上下文：此刻焦点还在目标应用
@@ -135,49 +164,43 @@ final class AppState: ObservableObject {
         liveTranscript = ""
         finalText = ""
 
-        let session = ASRBackendRegistry.shared.backend(for: settings.asrBackend).makeSession()
-        session.onUpdate = { [weak self] text in
-            self?.liveTranscript = text
-        }
         // 识别偏置：光标前文本喂给支持 context 的后端（Qwen3-ASR）
+        var contextHint: String?
         if settings.contextEnabled, let before = contextSnapshot?.textBeforeCursor, !before.isEmpty {
-            session.contextHint = String(before.suffix(200))
+            contextHint = String(before.suffix(200))
         }
-        asrSession = session
-
-        let recorder = AudioRecorder()
-        recorder.onBuffer = { [weak session] buffer in
-            session?.feed(buffer)
-        }
-        recorder.onLevel = { [weak self] level in
-            Task { @MainActor in self?.audioLevel = level }
-        }
-        self.recorder = recorder
-
-        do {
-            try recorder.start()
-        } catch {
-            fail(error.localizedDescription)
-            return
-        }
+        let config = sessionConfig(contextHint: contextHint)
 
         phase = .recording
         overlay.show(state: self)
 
         Task {
+            let session = await resolveBackend().makeSession()
+            guard self.sessionCounter == sessionID else {
+                await session.cancel()
+                return
+            }
+            session.onUpdate = { [weak self] text in
+                self?.liveTranscript = text
+            }
+            session.onLevel = { [weak self] level in
+                self?.audioLevel = level
+            }
+            self.asrSession = session
             do {
-                try await session.start(localeID: settings.localeID)
+                try await session.start(config: config)
             } catch {
-                self.recorder?.stop()
-                self.fail(error.localizedDescription)
+                await session.cancel()
+                if self.sessionCounter == sessionID {
+                    self.asrSession = nil
+                    self.fail(error.localizedDescription)
+                }
             }
         }
     }
 
     private func finishSession() {
         let sessionID = sessionCounter
-        recorder?.stop()
-        recorder = nil
         audioLevel = 0
         phase = .transcribing
 
@@ -236,8 +259,6 @@ final class AppState: ObservableObject {
     func cancelSession() {
         guard phase == .recording || phase == .transcribing || phase == .refining else { return }
         sessionCounter += 1
-        recorder?.stop()
-        recorder = nil
         audioLevel = 0
         let session = asrSession
         asrSession = nil

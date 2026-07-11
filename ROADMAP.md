@@ -44,7 +44,7 @@
 
 ## 里程碑
 
-> **当前状态（2026-07-10）**：M1 ✅ 完成并日常可用；M2 进行中——Qwen3-ASR 双档位已接入、context 偏置已验证，剩 VAD 前置（W3）、置信度（W4）、daemon 拆分（W5）、测试集评测（W6）。下一步：W3。
+> **当前状态（2026-07-11）**：M1 ✅、M2 ✅ 全部完成。Qwen3-ASR（0.6B/1.7B）+ VAD 前置 + daemon 常驻架构就绪，评测 1.7B 混说 CER 1.55%（基线 8.98%）。下一步：M3 拼音 IME（前置补课：真人录音测试集、M1 Air 基准、XPC 签名校验）。
 
 ### M1 — 语音管线 MVP ✅（2026-07-10 完成，commit `4750704`）
 
@@ -61,23 +61,20 @@
 
 **验收**：日常听写可用 ✅；50 句测试集的量化对比未做（并入 M2-W6 一起做）。
 
-### M2 — 接入 Qwen3-ASR（MLX）🔶 进行中（W1/W2 完成，commit `25ea645`/`69ea7d2`）
+### M2 — 接入 Qwen3-ASR（MLX）✅（2026-07-11 完成）
 
-详细方案见 [docs/M2.md](docs/M2.md)。调研结论（2026-07）：直接依赖 speech-swift（成熟的 MLX Swift 实现），不自行移植；开源版**支持** context 偏置（prompt 模板 system 槽位，speech-swift 已暴露 `context` 参数），光标前文本/用户词库可直接喂 ASR——已实测生效，但热词精确命中率依赖措辞，待调优。
+方案见 [docs/M2.md](docs/M2.md)，评测数据见 [docs/M2-bench.md](docs/M2-bench.md)。关键调研结论：直接依赖 speech-swift（锁 0.0.21），不自行移植；开源版**支持** context 偏置（system 槽位），已实测生效（热词精确命中率依赖措辞，M3 调优）。
 
 - [x] W1 ASR 后端协议化（`ASRBackend`/`ASRSession`）：SpeechAnalyzer / Qwen3-ASR 设置中可切换
-- [x] W2 集成 speech-swift（锁 0.0.21）：0.6B 4-bit 默认档 / 1.7B 8-bit 高质量档；下载进度进设置 UI；本地有权重自动走离线模式（弱网不卡启动）
-  - [ ] 模型删除/磁盘占用 UI、HF 镜像 endpoint 配置（暂靠 README 的手动下载说明兜底）
+- [x] W2 集成 speech-swift：0.6B 4-bit 默认档 / 1.7B 8-bit 高质量档；下载进度、磁盘占用/删除/打开目录进设置 UI；本地有权重自动走离线模式（弱网不卡启动）。HF 镜像 endpoint 上游未暴露——手动导入方案兜底（README）
 - [x] context 识别偏置端到端接通（光标前文本 → 模型 system 槽位）
-- [x] 幻觉后置检测（重复 n-gram、文本/时长比异常）
-- [ ] W3 VAD 前置过滤（speech-swift 自带 Silero 系）替代 RMS：掐首尾静音、长停顿分段、纯静音直接丢弃
+- [x] W3 VAD 前置过滤（Silero，MLX）：掐首尾静音 + 纯静音/噪声直接拦截（实测无 VAD 幻觉 2/5 → 有 VAD 0/5）；幻觉后置检测（重复 n-gram、时长比）双防线
 - [x] 流式预览（录音中自适应节奏局部重转写）
-- [ ] W4 词级置信度（取决于上游是否暴露 logprobs，不设为出口条件）
-- [ ] W5 daemon 拆分：模型推理与音频采集移入 aime-daemon，XPC 接口定型（进度紧张可顺延 M3）
-- [ ] W6 50 句中英混说测试集 + 指标补全（CER/WER、首字延迟、峰值内存）
-  - [x] aime-bench 评测 CLI 雏形（转写/耗时/RTF/context 对比）；实测 0.6B 预热后 RTF≈0.03、1.7B≈0.05–0.12，小样本中英混说全对
+- [x] W4 置信度调研：上游 argMax 贪心解码不暴露 logprobs，**被上游阻塞**（按计划不设为出口条件；M3 如需可 fork/提 PR）
+- [x] W5 daemon 拆分：AimeASR 共享库 + aime-daemon（SMAppService LaunchAgent + MachService XPC）+ app 侧代理与自动回退；实测注册/ping/模型常驻（二次 prepare 0.00s）全通。默认关闭（实验性开关），daemon 麦克风真人链路与 XPC 签名校验留 M3
+- [x] W6 50 句混说测试集 + aime-bench：混合 CER / RTF / 峰值内存；**1.7B CER 1.55% vs 基线 8.98%**（TTS 合成音，绝对值偏乐观）
 
-**验收进度**：引擎可切换 ✅；实时率远优于目标（RTF≪1.0，本机）✅；混说质量对比 SpeechAnalyzer、静音零幻觉、M1 Air 下限机型基准——待 W3/W6。
+**验收**：引擎可切换 ✅；RTF≪1.0 ✅；混说质量优于 SpeechAnalyzer ✅（5.8×）；静音零幻觉 ✅（5/5 拦截）；daemon 模型常驻 ✅。未覆盖：M1 Air 下限机型基准、真人录音测试集（移入 M3 前置任务）。
 
 **验收**：中英混说质量优于 SpeechAnalyzer 基线（对照 SenseVoice 作参照）；M1 Air 上流式实时率 < 1.0。
 

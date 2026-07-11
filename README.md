@@ -2,7 +2,7 @@
 
 AI 输入法：语音 + 拼音双模态，中英混输为核心场景，macOS native。规划见 [ROADMAP.md](ROADMAP.md)。
 
-当前进度：**M1 — 语音输入 MVP**。菜单栏应用，按住快捷键说话，松开后本地转写（SpeechAnalyzer）→ LLM 精修 → 注入前台应用。
+当前进度：**M2 完成**。菜单栏应用，按住快捷键说话，本地转写（SpeechAnalyzer 或 Qwen3-ASR/MLX，Silero VAD 前置）→ LLM 精修 → 注入前台应用；可选 aime-daemon 后台服务承载模型常驻（SMAppService + XPC，实验性）。评测见 [docs/M2-bench.md](docs/M2-bench.md)。
 
 ## 构建与运行
 
@@ -25,21 +25,28 @@ make bundle SIGN_IDENTITY=-
 3. 在任意输入框中，**按住右 Option** 说话，松开完成。Esc 取消。
 4. 菜单栏 → 设置：配置 LLM API（OpenAI 兼容，默认 DeepSeek）后启用精修；**API Key 留空则直接使用原始转写**，不发出任何网络请求。
 
-## 架构（M1）
+## 架构（M2）
 
 ```
-Sources/aime/
-├── App.swift                  MenuBarExtra + Settings scene
-├── AppState.swift             会话状态机（idle→recording→transcribing→refining→done）
-├── Settings.swift             UserDefaults 设置
-├── Audio/AudioRecorder.swift  AVAudioEngine 采集 + 电平
-├── ASR/TranscriberSession.swift  SpeechAnalyzer 流式转写（每次会话一个实例）
-├── Refine/LLMRefiner.swift    OpenAI 兼容 chat/completions 精修
-├── Context/ContextCapture.swift  AX 读取光标前文本 + 前台应用名
-├── Inject/TextInjector.swift  粘贴（保存/恢复剪贴板）或模拟键入
-├── Hotkey/HotkeyMonitor.swift 全局按住说话监听（NSEvent global monitor）
-└── UI/                        浮层（NSPanel 非激活）+ 设置界面（SwiftUI）
+Sources/
+├── AimeASR/                   共享库（app / daemon / bench 共用）
+│   ├── ASRTypes.swift         ASRBackend/ASRSession 协议、ASRSessionConfig、ModelStore
+│   ├── AudioRecorder.swift    AVAudioEngine 采集 + 电平（会话自持）
+│   ├── SpeechAnalyzerBackend.swift  系统基线引擎（流式）
+│   ├── Qwen3ASRBackend.swift  Qwen3-ASR（MLX）+ Silero VAD 前置 + 幻觉检测
+│   └── XPCProtocol.swift      daemon XPC 接口定义
+├── aime/                      菜单栏应用
+│   ├── AppState.swift         会话状态机（idle→recording→transcribing→refining→done）
+│   ├── Daemon/                SMAppService 注册、XPC 客户端与代理后端（自动回退进程内）
+│   ├── Refine/LLMRefiner.swift  OpenAI 兼容 chat/completions 精修
+│   ├── Context/ Inject/ Hotkey/  AX 上下文、文本注入、全局快捷键
+│   └── UI/                    浮层（NSPanel 非激活）+ 设置界面（SwiftUI）
+├── aime-daemon/               推理服务（LaunchAgent，模型常驻 + 录音，XPC MachService）
+└── aime-bench/                评测 CLI（--suite 测试集出混合 CER/RTF/内存报告）
 ```
+
+评测复现：`./scripts/gen_testset.sh && swift run -c release aime-bench --suite testdata --backend <id> [--vad]`
+Daemon 调试：`aime --daemon-status` / `aime --daemon-prepare`；重启用 `make daemon-restart`。
 
 ## 隐私
 

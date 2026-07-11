@@ -16,17 +16,24 @@ build:
 
 bundle: build
 	rm -rf $(APP)
-	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
+	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources $(APP)/Contents/Library/LaunchAgents
 	cp $(BINARY) $(APP)/Contents/MacOS/aime
+	cp .build/release/aime-daemon $(APP)/Contents/MacOS/aime-daemon
+	cp Resources/com.zhanba.aime.daemon.plist $(APP)/Contents/Library/LaunchAgents/
 	# metallib 实体放 Resources（Contents/MacOS 只允许已签名的可执行体）；
 	# MLX 在可执行文件同目录查找 mlx.metallib，用符号链接满足
 	cp $(METALLIB) $(APP)/Contents/Resources/mlx.metallib
 	ln -s ../Resources/mlx.metallib $(APP)/Contents/MacOS/mlx.metallib
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
+	codesign --force --sign "$(SIGN_IDENTITY)" $(APP)/Contents/MacOS/aime-daemon
 	codesign --force --sign "$(SIGN_IDENTITY)" $(APP)
 
 run: bundle
 	open $(APP)
+
+# 重新构建后 launchd 里可能还跑着旧 daemon，用它强制重启
+daemon-restart:
+	launchctl kickstart -k gui/$$(id -u)/com.zhanba.aime.daemon 2>/dev/null || true
 
 clean:
 	rm -rf .build build

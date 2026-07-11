@@ -1,3 +1,4 @@
+import AimeASR
 import Foundation
 
 /// OpenAI 兼容 chat/completions 精修层。apiKey 为空时调用方直接跳过精修。

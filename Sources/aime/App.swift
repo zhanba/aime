@@ -6,6 +6,10 @@ struct AimeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @ObservedObject private var state = AppState.shared
 
+    init() {
+        DebugCLI.runIfNeeded()
+    }
+
     var body: some Scene {
         MenuBarExtra {
             MenuContent(state: state)

@@ -2,27 +2,33 @@ import AVFoundation
 import Speech
 
 /// 系统 SpeechAnalyzer 后端：零下载、全离线的基线引擎。
-final class SpeechAnalyzerBackend: ASRBackend {
-    let id: ASRBackendID = .speechAnalyzer
+public final class SpeechAnalyzerBackend: ASRBackend {
+    public let id: ASRBackendID = .speechAnalyzer
+    public var onProgress: ((String?) -> Void)?
 
-    func prepareModel(localeID: String) async throws {
-        try await SpeechAnalyzerSession.ensureModel(localeID: localeID)
+    public init() {}
+
+    public func prepareModel(config: ASRSessionConfig) async throws {
+        onProgress?("准备系统语音模型…")
+        defer { onProgress?(nil) }
+        try await SpeechAnalyzerSession.ensureModel(localeID: config.localeID)
     }
 
-    func makeSession() -> ASRSession {
+    public func makeSession() -> ASRSession {
         SpeechAnalyzerSession()
     }
 }
 
-/// 一次录音会话对应一个 SpeechAnalyzerSession（SpeechAnalyzer 流式转写）。
+/// 一次录音会话（SpeechAnalyzer 流式转写），自持麦克风采集。
 ///
-/// 线程模型：`feed(_:)` 在音频线程调用；音频缓冲在 analyzer 格式确定前先入队，
-/// 确定后统一冲刷，因此录音可以先于 analyzer 就绪启动，不丢首音节。
-final class SpeechAnalyzerSession: ASRSession {
+/// 线程模型：音频回调在音频线程；缓冲在 analyzer 格式确定前先入队，
+/// 确定后统一冲刷，因此录音先于 analyzer 就绪启动也不丢首音节。
+public final class SpeechAnalyzerSession: ASRSession {
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
+    private let recorder = AudioRecorder()
 
     private let stateLock = NSLock()
     private var analyzerFormat: AVAudioFormat?
@@ -32,11 +38,10 @@ final class SpeechAnalyzerSession: ASRSession {
     private var finalizedText = ""
     private var volatileText = ""
 
-    /// 转写文本更新（已定稿 + 未定稿），在 MainActor 上回调。
-    var onUpdate: (@MainActor (String) -> Void)?
+    public var onUpdate: (@MainActor (String) -> Void)?
+    public var onLevel: (@MainActor (Float) -> Void)?
 
-    /// SpeechAnalyzer 不支持识别偏置，忽略。
-    var contextHint: String?
+    public init() {}
 
     /// NSLock 的同步作用域封装，可安全地从 async 上下文调用。
     private func withState<T>(_ body: () -> T) -> T {
@@ -46,7 +51,7 @@ final class SpeechAnalyzerSession: ASRSession {
     }
 
     /// 确保 locale 支持且模型资产已安装。首次调用会触发模型下载。
-    static func ensureModel(localeID: String) async throws {
+    public static func ensureModel(localeID: String) async throws {
         let locale = Locale(identifier: localeID)
         guard let supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
             throw AimeError.localeUnsupported(localeID)
@@ -62,11 +67,19 @@ final class SpeechAnalyzerSession: ASRSession {
         }
     }
 
-    func start(localeID: String) async throws {
-        let locale = Locale(identifier: localeID)
+    public func start(config: ASRSessionConfig) async throws {
+        let locale = Locale(identifier: config.localeID)
         guard let supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
-            throw AimeError.localeUnsupported(localeID)
+            throw AimeError.localeUnsupported(config.localeID)
         }
+
+        // 先启动录音：缓冲会排队等待 analyzer 就绪
+        recorder.onBuffer = { [weak self] buffer in self?.feed(buffer) }
+        recorder.onLevel = { [weak self] level in
+            Task { @MainActor in self?.onLevel?(level) }
+        }
+        try recorder.start()
+
         let transcriber = SpeechTranscriber(
             locale: supported,
             transcriptionOptions: [],
@@ -114,7 +127,7 @@ final class SpeechAnalyzerSession: ASRSession {
     }
 
     /// 音频线程调用。
-    func feed(_ buffer: AVAudioPCMBuffer) {
+    private func feed(_ buffer: AVAudioPCMBuffer) {
         stateLock.lock()
         if analyzerFormat == nil {
             pendingBuffers.append(buffer)
@@ -125,8 +138,8 @@ final class SpeechAnalyzerSession: ASRSession {
         convertAndYield(buffer)
     }
 
-    /// 结束输入并等待定稿，返回完整转写结果。
-    func finish() async throws -> ASRResult {
+    public func finish() async throws -> ASRResult {
+        recorder.stop()
         inputContinuation?.finish()
         try await withTimeout(seconds: 10) { [analyzer] in
             try await analyzer?.finalizeAndFinishThroughEndOfInput()
@@ -138,7 +151,8 @@ final class SpeechAnalyzerSession: ASRSession {
         return ASRResult(text: text, segments: nil)
     }
 
-    func cancel() async {
+    public func cancel() async {
+        recorder.stop()
         inputContinuation?.finish()
         resultsTask?.cancel()
         await analyzer?.cancelAndFinishNow()
@@ -181,18 +195,5 @@ final class SpeechAnalyzerSession: ASRSession {
         }
         guard conversionError == nil, output.frameLength > 0 else { return }
         inputContinuation?.yield(AnalyzerInput(buffer: output))
-    }
-}
-
-/// 超时保护：超时抛 CancellationError，避免 finalize 卡死整个会话。
-func withTimeout(seconds: TimeInterval, _ work: @escaping @Sendable () async throws -> Void) async throws {
-    try await withThrowingTaskGroup(of: Void.self) { group in
-        group.addTask { try await work() }
-        group.addTask {
-            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            throw CancellationError()
-        }
-        try await group.next()
-        group.cancelAll()
     }
 }

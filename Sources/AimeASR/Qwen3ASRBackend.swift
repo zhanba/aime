@@ -1,64 +1,62 @@
 import AVFoundation
 import Qwen3ASR
+import SpeechVAD
 
 /// Qwen3-ASR（MLX 本地推理）后端。
 ///
 /// speech-swift 的所有调用收敛在本文件（依赖锁精确版本，升级时只需过这一个文件）。
-/// 模型非线程安全，所有推理经 `Qwen3Inference` actor 串行化。
-final class Qwen3ASRBackend: ASRBackend {
-    let id: ASRBackendID = .qwen3ASR
+/// 模型非线程安全，所有推理（含 VAD）经 `Qwen3Inference` actor 串行化。
+public final class Qwen3ASRBackend: ASRBackend {
+    public let id: ASRBackendID = .qwen3ASR
+    public var onProgress: ((String?) -> Void)?
 
     private let inference = Qwen3Inference()
 
-    func prepareModel(localeID: String) async throws {
-        try await inference.load(modelID: Settings.current().qwen3ModelID)
+    public init() {}
+
+    public func prepareModel(config: ASRSessionConfig) async throws {
+        defer { onProgress?(nil) }
+        try await inference.load(modelID: config.qwen3ModelID) { [onProgress] progress, status in
+            onProgress?(progress < 1.0 ? "\(status) \(Int(progress * 100))%" : nil)
+        }
+        try await inference.loadVAD()
     }
 
-    func makeSession() -> ASRSession {
+    public func makeSession() -> ASRSession {
         Qwen3ASRSession(inference: inference)
     }
 }
 
-/// 持有已加载的模型并串行化推理。
+/// 持有已加载的模型（ASR + Silero VAD）并串行化推理。
 actor Qwen3Inference {
     private var model: Qwen3ASRModel?
     private var loadedModelID: String?
+    private var vad: SileroVADModel?
 
-    /// 某个模型的专属目录。必须符合 HF Hub 布局 `<base>/models/<org>/<name>`——
-    /// speech-swift 的下载器靠路径后缀反推 downloadBase，不匹配时会静默下载到别处。
-    /// 加载器还要求目录已存在，访问时确保创建。
-    static func modelDir(for modelID: String) -> URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("aime", isDirectory: true)
-            .appendingPathComponent("models", isDirectory: true)
-            .appendingPathComponent(modelID, isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }
-
-    func load(modelID: String) async throws {
+    func load(modelID: String, progressHandler: @escaping (Double, String) -> Void) async throws {
         if loadedModelID == modelID, model != nil { return }
         model = nil // 先释放旧模型再加载，避免两份权重同时驻留
         loadedModelID = nil
-        let modelDir = Self.modelDir(for: modelID)
-        // 权重已在本地时走离线模式：否则每次启动都会对每个文件向 HF 发 HEAD 校验，
-        // 网络差时 prepareModel 会长时间卡住甚至失败
-        let hasWeights = (try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil))?
-            .contains { $0.pathExtension == "safetensors" } ?? false
         let loaded = try await Qwen3ASRModel.fromPretrained(
             modelId: modelID,
-            cacheDir: modelDir,
-            offlineMode: hasWeights,
-            progressHandler: { progress, status in
-                Task { @MainActor in
-                    AppState.shared.modelDownloadStatus = progress < 1.0
-                        ? "\(status) \(Int(progress * 100))%"
-                        : nil
-                }
-            }
+            cacheDir: ModelStore.modelDir(for: modelID),
+            offlineMode: ModelStore.hasWeights(for: modelID),
+            progressHandler: progressHandler
         )
         model = loaded
         loadedModelID = modelID
+    }
+
+    /// VAD 模型很小（~2MB），加载失败不阻塞 ASR（退化为不修剪）。
+    func loadVAD() async throws {
+        guard vad == nil else { return }
+        let modelID = SileroVADModel.defaultModelId
+        vad = try? await SileroVADModel.fromPretrained(
+            modelId: modelID,
+            engine: .mlx,
+            cacheDir: ModelStore.modelDir(for: modelID),
+            offlineMode: ModelStore.hasWeights(for: modelID)
+        )
     }
 
     func transcribe(samples: [Float], language: String?, context: String?) throws -> String {
@@ -71,19 +69,50 @@ actor Qwen3Inference {
             context: context
         )
     }
+
+    /// W3 前置过滤：掐首尾静音（带 padding），全静音返回 nil。
+    /// VAD 不可用时原样返回（不修剪也不拦截）。
+    func vadTrim(samples: [Float], threshold: Float = 0.5, paddingSeconds: Double = 0.25) -> [Float]? {
+        guard let vad else { return samples }
+        vad.resetState()
+        let chunkSize = SileroVADModel.chunkSize
+        var firstSpeech: Int?
+        var lastSpeech: Int?
+        var offset = 0
+        while offset < samples.count {
+            let end = min(offset + chunkSize, samples.count)
+            var chunk = Array(samples[offset ..< end])
+            if chunk.count < chunkSize {
+                chunk.append(contentsOf: [Float](repeating: 0, count: chunkSize - chunk.count))
+            }
+            let probability = vad.processChunk(chunk)
+            if probability >= threshold {
+                if firstSpeech == nil { firstSpeech = offset }
+                lastSpeech = end
+            }
+            offset = end
+        }
+        guard let firstSpeech, let lastSpeech else { return nil }
+        let padding = Int(paddingSeconds * 16000)
+        let start = max(0, firstSpeech - padding)
+        let stop = min(samples.count, lastSpeech + padding)
+        return Array(samples[start ..< stop])
+    }
 }
 
-/// 一次录音会话：feed 侧把音频重采样为 16k 单声道 Float 并累积；
-/// 录音期间周期性对已累积音频做局部转写产出实时预览；finish 做整段定稿转写。
-final class Qwen3ASRSession: ASRSession {
-    var onUpdate: (@MainActor (String) -> Void)?
-    var contextHint: String?
+/// 一次录音会话：自持麦克风采集，重采样为 16k 单声道累积；
+/// 录音期间周期性局部转写产出实时预览；finish 时 VAD 修剪 + 整段定稿转写。
+public final class Qwen3ASRSession: ASRSession {
+    public var onUpdate: (@MainActor (String) -> Void)?
+    public var onLevel: (@MainActor (Float) -> Void)?
 
     private let inference: Qwen3Inference
+    private let recorder = AudioRecorder()
     private let lock = NSLock()
     private var samples: [Float] = []
     private var converter: AVAudioConverter?
     private var language: String?
+    private var contextHint: String?
     private var partialTask: Task<Void, Never>?
     private var cancelled = false
 
@@ -98,11 +127,6 @@ final class Qwen3ASRSession: ASRSession {
         self.inference = inference
     }
 
-    func start(localeID: String) async throws {
-        language = Self.languageHint(for: localeID)
-        startPartialLoop()
-    }
-
     /// NSLock 的同步作用域封装，可安全地从 async 上下文调用。
     private func snapshotSamples() -> [Float] {
         lock.lock()
@@ -110,27 +134,46 @@ final class Qwen3ASRSession: ASRSession {
         return samples
     }
 
-    func feed(_ buffer: AVAudioPCMBuffer) {
+    public func start(config: ASRSessionConfig) async throws {
+        language = Self.languageHint(for: config.localeID)
+        contextHint = config.contextHint
+        recorder.onBuffer = { [weak self] buffer in self?.feed(buffer) }
+        recorder.onLevel = { [weak self] level in
+            Task { @MainActor in self?.onLevel?(level) }
+        }
+        try recorder.start()
+        startPartialLoop()
+    }
+
+    private func feed(_ buffer: AVAudioPCMBuffer) {
         guard let converted = convert(buffer) else { return }
         lock.lock()
         samples.append(contentsOf: converted)
         lock.unlock()
     }
 
-    func finish() async throws -> ASRResult {
+    public func finish() async throws -> ASRResult {
+        recorder.stop()
         partialTask?.cancel()
         let snapshot = snapshotSamples()
         guard snapshot.count >= Self.minSampleCount else {
             return ASRResult(text: "", segments: nil)
         }
+        // W3：VAD 前置——掐首尾静音，纯静音直接返回空（不喂给 LLM ASR，杜绝幻觉）
+        guard let trimmed = await inference.vadTrim(samples: snapshot),
+              trimmed.count >= Self.minSampleCount
+        else {
+            return ASRResult(text: "", segments: nil)
+        }
         let text = try await inference.transcribe(
-            samples: snapshot, language: language, context: contextHint
+            samples: trimmed, language: language, context: contextHint
         )
-        return ASRResult(text: Self.sanitize(text, sampleCount: snapshot.count), segments: nil)
+        return ASRResult(text: Self.sanitize(text, sampleCount: trimmed.count), segments: nil)
     }
 
-    func cancel() async {
+    public func cancel() async {
         cancelled = true
+        recorder.stop()
         partialTask?.cancel()
     }
 
@@ -194,7 +237,7 @@ final class Qwen3ASRSession: ASRSession {
         return Array(UnsafeBufferPointer(start: data[0], count: Int(output.frameLength)))
     }
 
-    private static func languageHint(for localeID: String) -> String? {
+    static func languageHint(for localeID: String) -> String? {
         // Qwen3-ASR 接受 "zh"/"en" 等短代码；中英混说用 "zh" 即可覆盖
         let prefix = localeID.split(separator: "_").first.map(String.init) ?? localeID
         return prefix.isEmpty ? nil : prefix
