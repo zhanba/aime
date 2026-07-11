@@ -603,7 +603,8 @@ class AimeInputController: IMKInputController {
                 segments: engineResult?.segments ?? PinyinSegmenter.segment(snapshot),
                 context: context.isEmpty ? nil : context,
                 userDictEntries: UserDictionary.shared.topEntries(),
-                config: config
+                config: config,
+                boundaryAlternatives: engineResult?.boundaryAlternatives ?? []
             )
             guard snapshot == rawBuffer, !voiceRecording else { return }
             llmConversion = result

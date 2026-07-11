@@ -88,8 +88,12 @@ public enum PinyinPromptBuilder {
         return lines.joined(separator: "\n")
     }
 
-    public static func userPrompt(raw: String, segments: [PinyinSegment]) -> String {
-        "原始按键：\(raw)\n切分分析：\(describe(segments: segments))"
+    public static func userPrompt(raw: String, segments: [PinyinSegment], boundaryAlternatives: [String] = []) -> String {
+        var text = "原始按键：\(raw)\n切分分析：\(describe(segments: segments))"
+        if !boundaryAlternatives.isEmpty {
+            text += "\n另一种可能的切分：\(boundaryAlternatives.joined(separator: "；"))（若按此切分语义更合理，请按此转换）"
+        }
+        return text
     }
 }
 
@@ -104,7 +108,14 @@ public struct PinyinConverter {
         config: PinyinLLMConfig
     ) async throws -> PinyinConversion {
         let segments = PinyinSegmenter.segment(raw, enabledFuzzyRuleIDs: config.enabledFuzzyRuleIDs)
-        return try await convert(raw: raw, segments: segments, context: context, userDictEntries: userDictEntries, config: config)
+        var alternatives: [String] = []
+        for segment in segments {
+            if case .pinyin(let syllables) = segment.kind {
+                alternatives += PinyinSegmenter.boundaryVariants(of: syllables, enabledFuzzyRuleIDs: config.enabledFuzzyRuleIDs)
+                    .map { $0.map(\.text).joined(separator: " ") }
+            }
+        }
+        return try await convert(raw: raw, segments: segments, context: context, userDictEntries: userDictEntries, config: config, boundaryAlternatives: alternatives)
     }
 
     public func convert(
@@ -112,7 +123,8 @@ public struct PinyinConverter {
         segments: [PinyinSegment],
         context: String?,
         userDictEntries: [String],
-        config: PinyinLLMConfig
+        config: PinyinLLMConfig,
+        boundaryAlternatives: [String] = []
     ) async throws -> PinyinConversion {
         var base = config.apiBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while base.hasSuffix("/") { base.removeLast() }
@@ -131,7 +143,7 @@ public struct PinyinConverter {
             "max_tokens": 256,
             "messages": [
                 ["role": "system", "content": PinyinPromptBuilder.systemPrompt(context: context, userDictEntries: userDictEntries)],
-                ["role": "user", "content": PinyinPromptBuilder.userPrompt(raw: raw, segments: segments)],
+                ["role": "user", "content": PinyinPromptBuilder.userPrompt(raw: raw, segments: segments, boundaryAlternatives: boundaryAlternatives)],
             ],
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)

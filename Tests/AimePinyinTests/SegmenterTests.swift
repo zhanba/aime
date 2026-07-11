@@ -169,3 +169,32 @@ final class SegmenterTests: XCTestCase {
         XCTAssertTrue(description.contains("[原样保留:API]"), description)
     }
 }
+
+final class BoundaryAmbiguityTests: XCTestCase {
+    func testBoundaryVariantsGenerated() {
+        // fangan：主切分 fan|gan，变体应含 fang|an
+        let segments = PinyinSegmenter.segment("fangan")
+        guard case .pinyin(let syllables) = segments[0].kind else { return XCTFail() }
+        let variants = PinyinSegmenter.boundaryVariants(of: syllables)
+        XCTAssertTrue(variants.contains { $0.map(\.text) == ["fang", "an"] }, "\(variants.map { $0.map(\.text) })")
+    }
+
+    func testReverseDirection() {
+        // wanan：主切分 wa|nan（或 wan|an），另一方向也要能生成
+        let segments = PinyinSegmenter.segment("wanan")
+        guard case .pinyin(let syllables) = segments[0].kind else { return XCTFail() }
+        let variants = PinyinSegmenter.boundaryVariants(of: syllables)
+        let all = [syllables.map(\.text)] + variants.map { $0.map(\.text) }
+        XCTAssertTrue(all.contains(["wan", "an"]), "\(all)")
+    }
+
+    func testVerifierAcceptsBothReadings() {
+        let segments = PinyinSegmenter.segment("fangan")
+        XCTAssertEqual(PinyinVerifier.verify(candidate: "方案", segments: segments), .pass)
+        XCTAssertEqual(PinyinVerifier.verify(candidate: "反感", segments: segments), .pass)
+        // 房间：fang 命中变体首音节、jian 不匹配 → 1 字容差 = demote（多音字容差的正确行为）
+        XCTAssertEqual(PinyinVerifier.verify(candidate: "房间", segments: segments), .demote)
+        // 两字都对不上 → reject
+        XCTAssertEqual(PinyinVerifier.verify(candidate: "电脑", segments: segments), .reject)
+    }
+}

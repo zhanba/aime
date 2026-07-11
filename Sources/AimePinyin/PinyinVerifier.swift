@@ -72,9 +72,25 @@ public enum PinyinVerifier {
         syllable.replacingOccurrences(of: "v", with: "u")
     }
 
-    /// 校验候选句与切分假设的读音一致性。
+    /// 校验候选句与切分假设的读音一致性（含边界歧义变体：fangan 的两种切法都接受）。
     /// 候选中的非汉字字符与 literal 段宽松跳过（英文/数字/标点不参与验音）。
     public static func verify(candidate: String, segments: [PinyinSegment]) -> Verdict {
+        var best = verifyOnePath(candidate: candidate, segments: segments)
+        if best == .pass { return best }
+        for (index, segment) in segments.enumerated() {
+            guard case .pinyin(let syllables) = segment.kind else { continue }
+            for variant in PinyinSegmenter.boundaryVariants(of: syllables) {
+                var altSegments = segments
+                altSegments[index] = PinyinSegment(kind: .pinyin(variant), raw: segment.raw)
+                let verdict = verifyOnePath(candidate: candidate, segments: altSegments)
+                if verdict == .pass { return .pass }
+                if verdict == .demote, best == .reject { best = .demote }
+            }
+        }
+        return best
+    }
+
+    private static func verifyOnePath(candidate: String, segments: [PinyinSegment]) -> Verdict {
         // 展开全部音节的假设集（正解 + 模糊/修复备选 + partial 补全）
         var hypotheses: [Set<String>] = []
         for segment in segments {

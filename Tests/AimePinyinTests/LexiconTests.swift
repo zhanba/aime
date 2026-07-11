@@ -30,17 +30,23 @@ final class LexiconTests: XCTestCase {
         会	hui	80000
         中	zhong	90000
         国	guo	60000
+        方案	fang an	50000
+        反感	fan gan	9000
+        方	fang	40000
+        安	an	30000
+        反	fan	35000
+        感	gan	25000
         坏音节	bad syl	1
         """.write(to: dict, atomically: true, encoding: .utf8)
         lexiconURL = dir.appendingPathComponent("lexicon.bin")
         let (kept, dropped) = try Lexicon.compile(rimeDicts: [dict], to: lexiconURL)
-        XCTAssertEqual(kept, 18)
+        XCTAssertEqual(kept, 24)
         XCTAssertEqual(dropped, 1) // "bad syl" 非法音节被过滤
     }
 
     func testExactAndPrefixQuery() throws {
         let lexicon = try XCTUnwrap(Lexicon(url: lexiconURL))
-        XCTAssertEqual(lexicon.entryCount, 18)
+        XCTAssertEqual(lexicon.entryCount, 24)
         XCTAssertEqual(lexicon.exactMatches(key: "shi jie").map(\.word), ["世界"])
         XCTAssertTrue(lexicon.hasPrefix(key: "jin"))       // 金 / 今天
         XCTAssertTrue(lexicon.hasPrefix(key: "jin tian"))
@@ -73,6 +79,17 @@ final class LexiconTests: XCTestCase {
         XCTAssertEqual(result.wordCandidates.first?.word, "今天")
         // 词消耗按键长度映射
         XCTAssertEqual(PinyinEngine.consumedKeyLength(raw: "jintianxiawukaihui", segments: result.segments, syllableCount: 2), 7)
+    }
+
+    func testBoundaryAmbiguityReachable() throws {
+        // fangan：词候选与本地整句要能同时触达两种切法（方案权重更高应胜出）
+        let engine = PinyinEngine(lexiconURL: lexiconURL)
+        let result = engine.analyze("fangan")
+        let words = result.wordCandidates.map(\.word)
+        XCTAssertTrue(words.contains("方案"), "\(words)")
+        XCTAssertTrue(words.contains("反感"), "\(words)")
+        XCTAssertEqual(result.localSentence, "方案")
+        XCTAssertTrue(result.boundaryAlternatives.contains("fang an"))
     }
 
     func testEngineWithoutLexiconDegrades() {

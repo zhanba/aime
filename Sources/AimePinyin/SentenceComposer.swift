@@ -74,8 +74,13 @@ public struct SentenceComposer {
 
     /// Viterbi：整段音节 → 最优词序列（本地整句）。
     public func compose(syllables: [Syllable]) -> String {
+        composeScored(syllables: syllables).sentence
+    }
+
+    /// 带总分版本：边界歧义多路径间择优用。
+    public func composeScored(syllables: [Syllable]) -> (sentence: String, score: Double) {
         let count = syllables.count
-        guard count > 0 else { return "" }
+        guard count > 0 else { return ("", -.infinity) }
         struct Cell {
             var score: Double
             var previous: Int
@@ -108,7 +113,7 @@ public struct SentenceComposer {
             words.append(cell.word)
             cursor = cell.previous
         }
-        return words.reversed().joined()
+        return (words.reversed().joined(), dp[count]?.score ?? -.infinity)
     }
 }
 
@@ -157,6 +162,8 @@ public final class PinyinEngine {
         public var localSentence: String?
         /// 活动段起点的词候选（部分上屏用），已按分排序去重
         public var wordCandidates: [WordCandidate]
+        /// 边界歧义的替代切分（如 fangan 的 "fang an"），供 LLM prompt 提示
+        public var boundaryAlternatives: [String] = []
     }
 
     public func analyze(_ raw: String, fuzzyRuleIDs: Set<String> = FuzzyRule.defaultEnabled) -> Result {
@@ -165,26 +172,38 @@ public final class PinyinEngine {
             return Result(segments: segments, localSentence: nil, wordCandidates: [])
         }
 
-        // 本地整句：拼音段造句，literal 段透传
+        // 本地整句：拼音段（含边界歧义变体）多路 Viterbi 择优，literal 段透传
         var sentence = ""
+        var alternatives: [String] = []
         for segment in segments {
             switch segment.kind {
             case .literal(let text):
                 sentence += text
             case .pinyin(let syllables):
-                sentence += composer.compose(syllables: syllables)
+                let variants = PinyinSegmenter.boundaryVariants(of: syllables, enabledFuzzyRuleIDs: fuzzyRuleIDs)
+                alternatives += variants.map { $0.map(\.text).joined(separator: " ") }
+                var best = composer.composeScored(syllables: syllables)
+                for variant in variants {
+                    let scored = composer.composeScored(syllables: variant)
+                    if scored.score > best.score { best = scored }
+                }
+                sentence += best.sentence
             }
         }
 
-        // 词候选：第一个拼音段的起点（活动段）
+        // 词候选：第一个拼音段的起点（活动段），主切分 + 边界变体合并
         var candidates: [WordCandidate] = []
         if let firstPinyin = segments.first(where: {
             if case .pinyin = $0.kind { return true }
             return false
         }), case .pinyin(let syllables) = firstPinyin.kind {
             var seen = Set<String>()
+            var matches = composer.wordMatches(syllables: syllables, from: 0)
+            for variant in PinyinSegmenter.boundaryVariants(of: syllables, enabledFuzzyRuleIDs: fuzzyRuleIDs) {
+                matches += composer.wordMatches(syllables: variant, from: 0)
+            }
             // 展示排序：长词加成 + 用原始分；单字海量高频不该淹没整词
-            let ranked = composer.wordMatches(syllables: syllables, from: 0)
+            let ranked = matches
                 .sorted { ($0.score + Double($0.syllableCount) * 4) > ($1.score + Double($1.syllableCount) * 4) }
             for candidate in ranked {
                 let dedupeKey = candidate.word
@@ -194,7 +213,12 @@ public final class PinyinEngine {
                 if candidates.count >= 24 { break }
             }
         }
-        return Result(segments: segments, localSentence: sentence.isEmpty ? nil : sentence, wordCandidates: candidates)
+        return Result(
+            segments: segments,
+            localSentence: sentence.isEmpty ? nil : sentence,
+            wordCandidates: candidates,
+            boundaryAlternatives: alternatives
+        )
     }
 
     /// 词消耗的原始按键长度（含被跳过的分隔符），部分上屏用。

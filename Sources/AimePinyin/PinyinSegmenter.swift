@@ -257,6 +257,58 @@ public enum PinyinSegmenter {
     }
 }
 
+public extension PinyinSegmenter {
+    /// 边界歧义变体：n/g/元音在音节交界处的归属歧义（fangan = fan|gan vs fang|an）。
+    /// DP 只保留单一最优路径会把另一种切法整个丢掉——这里补回，供
+    /// 本地造句（双路 Viterbi 择优）、词候选合并、LLM prompt 与回验器使用。
+    /// 仅对 exact 音节对生效；每个交界独立产生一个变体，上限 3 个。
+    static func boundaryVariants(of syllables: [Syllable], enabledFuzzyRuleIDs: Set<String> = FuzzyRule.defaultEnabled) -> [[Syllable]] {
+        guard syllables.count >= 2 else { return [] }
+        var variants: [[Syllable]] = []
+
+        func makeSyllable(_ text: String) -> Syllable {
+            Syllable(
+                text: text, typed: text,
+                fuzzyAlternates: FuzzyExpander.variants(of: text, enabledRuleIDs: enabledFuzzyRuleIDs),
+                source: .exact
+            )
+        }
+
+        for index in 0 ..< syllables.count - 1 {
+            guard variants.count < 3 else { break }
+            let a = syllables[index]
+            let b = syllables[index + 1]
+            guard a.source == .exact, b.source == .exact else { continue }
+            let aText = a.text
+            let bText = b.text
+            var replacement: (String, String)?
+
+            let vowels: Set<Character> = ["a", "o", "e"]
+            if aText.hasSuffix("n"), !aText.hasSuffix("ng"), bText.hasPrefix("g"),
+               PinyinTable.isValid(aText + "g"), PinyinTable.isValid(String(bText.dropFirst())) {
+                replacement = (aText + "g", String(bText.dropFirst()))        // fan|gan → fang|an
+            } else if aText.hasSuffix("ng"), let first = bText.first, vowels.contains(first),
+                      PinyinTable.isValid(String(aText.dropLast())), PinyinTable.isValid("g" + bText) {
+                replacement = (String(aText.dropLast()), "g" + bText)         // fang|an → fan|gan
+            } else if aText.hasSuffix("n"), !aText.hasSuffix("ng"), let first = bText.first, vowels.contains(first),
+                      PinyinTable.isValid(String(aText.dropLast())), PinyinTable.isValid("n" + bText) {
+                replacement = (String(aText.dropLast()), "n" + bText)         // xian|an → xia|nan
+            } else if let first = bText.first, first == "n",
+                      PinyinTable.isValid(aText + "n"), PinyinTable.isValid(String(bText.dropFirst())) {
+                replacement = (aText + "n", String(bText.dropFirst()))        // xia|nan → xian|an
+            }
+
+            if let (newA, newB) = replacement {
+                var variant = syllables
+                variant[index] = makeSyllable(newA)
+                variant[index + 1] = makeSyllable(newB)
+                variants.append(variant)
+            }
+        }
+        return variants
+    }
+}
+
 private extension Character {
     var isLowercaseLatin: Bool {
         guard let scalar = unicodeScalars.first, unicodeScalars.count == 1 else { return false }
