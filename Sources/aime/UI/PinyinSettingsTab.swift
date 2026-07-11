@@ -73,14 +73,18 @@ struct PinyinSettingsTab: View {
     private func runPlayground() {
         let raw = playgroundInput.trimmingCharacters(in: .whitespaces)
         guard !raw.isEmpty else { return }
-        let segments = PinyinSegmenter.segment(raw, enabledFuzzyRuleIDs: enabledRules)
+        let result = PinyinEngine.shared.analyze(raw, fuzzyRuleIDs: enabledRules)
+        let segments = result.segments
         segmentationText = PinyinPromptBuilder.describe(segments: segments)
         conversionText = ""
-        let config = SharedConfig.loadLLMConfig()
-        guard !config.apiKey.isEmpty else {
-            conversionText = "（未配置 API key，仅显示切分）"
-            return
+        if let local = result.localSentence {
+            let words = result.wordCandidates.prefix(6).map(\.word).joined(separator: "/")
+            conversionText = "本地：\(local)\(words.isEmpty ? "" : "  词候选：\(words)")"
+        } else {
+            conversionText = "（词库未安装：终端执行 swift run -c release aime-pinyin --build-lexicon <白霜 cn_dicts 目录>）"
         }
+        let config = SharedConfig.loadLLMConfig()
+        guard !config.apiKey.isEmpty else { return }
         converting = true
         Task {
             do {
@@ -89,7 +93,8 @@ struct PinyinSettingsTab: View {
                     raw: raw, segments: segments, context: nil,
                     userDictEntries: UserDictionary.shared.topEntries(), config: config
                 )
-                var text = "首选：\(result.best)"
+                var text = conversionText.isEmpty ? "" : conversionText + "\n"
+                text += "首选：\(result.best)"
                 if let alternative = result.alternative {
                     text += "\n备选：\(alternative)"
                 }

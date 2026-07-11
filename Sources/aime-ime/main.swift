@@ -5,7 +5,6 @@ import InputMethodKit
 /// IMKServer 按 Info.plist 的 InputMethodServerControllerClass 实例化控制器。
 enum IMEGlobals {
     static var server: IMKServer!
-    static var candidates: IMKCandidates!
 }
 
 let app = NSApplication.shared
@@ -13,5 +12,4 @@ let connectionName = (Bundle.main.infoDictionary?["InputMethodConnectionName"] a
     ?? "com.zhanba.inputmethod.aime_Connection"
 NSLog("aime-ime 启动，连接名=\(connectionName)")
 IMEGlobals.server = IMKServer(name: connectionName, bundleIdentifier: Bundle.main.bundleIdentifier)
-IMEGlobals.candidates = IMKCandidates(server: IMEGlobals.server, panelType: kIMKSingleColumnScrollingCandidatePanel)
 app.run()

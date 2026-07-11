@@ -68,6 +68,7 @@ if let suitePath {
     }
     var correct = 0
     var localCorrect = 0
+    var covered = 0
     var latencies: [Double] = []
     let normalize = { (s: String) in
         s.replacingOccurrences(of: " ", with: "")
@@ -75,7 +76,7 @@ if let suitePath {
     }
     for (index, testCase) in cases.enumerated() {
         // 本地整句命中（词库层底线质量）
-        let local = engine.analyze(testCase.pinyin, fuzzyRuleIDs: config.enabledFuzzyRuleIDs).localSentence
+        let local: String? = engine.analyze(testCase.pinyin, fuzzyRuleIDs: config.enabledFuzzyRuleIDs).localSentence
         let localHit = local.map { normalize($0) == normalize(testCase.expected) } ?? false
         if localHit { localCorrect += 1 }
         if noLLM {
@@ -91,6 +92,13 @@ if let suitePath {
             latencies.append(cost)
             let hit = normalize(conversion.best) == normalize(testCase.expected)
             if hit { correct += 1 }
+            // 句级覆盖：首选/备选/本地整句 任一命中
+            var sentenceCandidates = [conversion.best]
+            if let alternative = conversion.alternative { sentenceCandidates.append(alternative) }
+            if let local { sentenceCandidates.append(local) }
+            if sentenceCandidates.contains(where: { normalize($0) == normalize(testCase.expected) }) {
+                covered += 1
+            }
             print("[\(index + 1)/\(cases.count)] \(hit ? "✓" : "✗") \(testCase.pinyin)")
             if !hit {
                 print("    期望: \(testCase.expected)")
@@ -107,6 +115,7 @@ if let suitePath {
     }
     if noLLM { exit(0) }
     print("首选准确率: \(correct)/\(cases.count) (\(String(format: "%.0f%%", Double(correct) / Double(cases.count) * 100)))")
+    print("句级候选覆盖率: \(covered)/\(cases.count) (\(String(format: "%.0f%%", Double(covered) / Double(cases.count) * 100)))")
     if !sorted.isEmpty {
         print(String(format: "延迟: p50=%.2fs p90=%.2fs", sorted[sorted.count / 2], sorted[min(sorted.count - 1, sorted.count * 9 / 10)]))
     }
