@@ -83,9 +83,38 @@ final class DaemonService: NSObject, AimeDaemonXPC {
     }
 }
 
+/// 取进程的代码签名 Team ID（未签名/ad-hoc 返回 nil）。
+func codeSigningTeamID(ofPID pid: pid_t) -> String? {
+    var code: SecCode?
+    let attributes = [kSecGuestAttributePid: pid] as CFDictionary
+    guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code else {
+        return nil
+    }
+    var staticCode: SecStaticCode?
+    guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else {
+        return nil
+    }
+    var info: CFDictionary?
+    guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+          let dict = info as? [String: Any]
+    else { return nil }
+    return dict[kSecCodeInfoTeamIdentifier as String] as? String
+}
+
+let ownTeamID = codeSigningTeamID(ofPID: getpid())
+
 final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
-        // TODO(M3): 校验连接方代码签名（同 Team ID），IME 进程接入前必须补上
+        // 签名校验：连接方 Team ID 必须与本进程一致（aime.app / aime-ime 同证书）。
+        // 注：基于 pid 的校验存在理论上的 pid 复用竞态，正式分发前应改用 audit token。
+        // 本进程未签名（开发 ad-hoc）时降级为同 UID 放行（launchd MachService 天然限同会话）。
+        if let ownTeamID {
+            let peerTeamID = codeSigningTeamID(ofPID: newConnection.processIdentifier)
+            guard peerTeamID == ownTeamID else {
+                NSLog("aime-daemon 拒绝连接：peer team=\(peerTeamID ?? "nil") own=\(ownTeamID)")
+                return false
+            }
+        }
         let service = DaemonService()
         service.connection = newConnection
         newConnection.exportedInterface = NSXPCInterface(with: AimeDaemonXPC.self)

@@ -41,3 +41,40 @@ final class VerifierTests: XCTestCase {
         XCTAssertEqual(PinyinVerifier.verify(candidate: "你好世界啊", segments: segments("nihaoshijie")), .reject)
     }
 }
+
+final class M4Tests: XCTestCase {
+    func testDerivePinyin() {
+        // 语音段退格转拼音（跨模态纠错 v1 的基础）
+        XCTAssertEqual(PinyinVerifier.derivePinyin(from: "你好世界"), "nihaoshijie")
+        XCTAssertNil(PinyinVerifier.derivePinyin(from: "有API的句子"))
+        XCTAssertNil(PinyinVerifier.derivePinyin(from: ""))
+        // 反推的拼音再走切分 → 能还原音节
+        let pinyin = PinyinVerifier.derivePinyin(from: "今天开会")!
+        let segments = PinyinSegmenter.segment(pinyin)
+        guard case .pinyin(let syllables) = segments[0].kind else { return XCTFail() }
+        XCTAssertEqual(syllables.map(\.text), ["jin", "tian", "kai", "hui"])
+    }
+
+    func testUserDictDecay() {
+        let old = UserDictionary.Entry(text: "旧词", count: 10, lastUsed: Date(timeIntervalSinceNow: -90 * 86400), source: "pinyin")
+        let recent = UserDictionary.Entry(text: "新词", count: 3, lastUsed: Date(), source: "voice")
+        // 90 天前的 10 次 < 现在的 3 次
+        XCTAssertLessThan(UserDictionary.decayedScore(old), UserDictionary.decayedScore(recent))
+    }
+
+    func testPrivacyBlockMatching() {
+        SharedConfig.mirrorPrivacyFromApp(blockedApps: ["com.apple.keychainaccess"], pureLocalMode: false)
+        XCTAssertTrue(SharedConfig.isBlocked(bundleID: "com.apple.keychainaccess"))
+        XCTAssertFalse(SharedConfig.isBlocked(bundleID: "com.apple.Safari"))
+        XCTAssertFalse(SharedConfig.isBlocked(bundleID: nil))
+        SharedConfig.mirrorPrivacyFromApp(blockedApps: [], pureLocalMode: false)
+    }
+
+    func testVoiceDisambiguationGate() {
+        // 消歧分流的门控逻辑：语音说"下周一要上线" vs 拼音 xiazhouyiyaoshangxian
+        let segments = PinyinSegmenter.segment("xiazhouyiyaoshangxian")
+        XCTAssertEqual(PinyinVerifier.verify(candidate: "下周一要上线", segments: segments), .pass)
+        // 语音说的是不相关内容 → reject → 走追加分支
+        XCTAssertEqual(PinyinVerifier.verify(candidate: "帮我订张机票", segments: segments), .reject)
+    }
+}

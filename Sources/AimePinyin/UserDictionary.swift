@@ -76,13 +76,20 @@ public final class UserDictionary {
         persist()
     }
 
+    /// 衰减评分：score = count · exp(−天数/30)，旧习惯自然淡出（借鉴 RIME tick 衰减的简化版）
+    static func decayedScore(_ entry: Entry, now: Date = Date()) -> Double {
+        let days = max(0, now.timeIntervalSince(entry.lastUsed) / 86400)
+        return Double(entry.count) * exp(-days / 30)
+    }
+
     public var allEntries: [Entry] {
         lock.lock()
         defer { lock.unlock() }
-        return entries.values.sorted { ($0.count, $0.lastUsed.timeIntervalSince1970) > ($1.count, $1.lastUsed.timeIntervalSince1970) }
+        let now = Date()
+        return entries.values.sorted { Self.decayedScore($0, now: now) > Self.decayedScore($1, now: now) }
     }
 
-    /// 注入 prompt 的 top-N（频次×新近度排序）。
+    /// 注入 prompt / ASR 热词的 top-N（衰减评分排序）。
     public func topEntries(_ limit: Int = 24) -> [String] {
         Array(allEntries.prefix(limit).map(\.text))
     }

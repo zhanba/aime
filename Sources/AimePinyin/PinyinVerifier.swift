@@ -54,6 +54,19 @@ public enum PinyinVerifier {
         return result
     }
 
+    /// 纯中文文本 → 无声调拼音串（多音字取默认读音；含非汉字返回 nil）。
+    /// 跨模态纠错 v1 的入口：语音文本反推拼音后，整套拼音机器直接可用。
+    public static func derivePinyin(from text: String) -> String? {
+        var result = ""
+        for char in text {
+            guard char.isChineseCharacter, let reading = readings(of: char).first else {
+                return nil
+            }
+            result += reading
+        }
+        return result.isEmpty ? nil : result
+    }
+
     /// v↔u 归一（nv/lv 与 nü/lü 拼写差异）
     private static func normalize(_ syllable: String) -> String {
         syllable.replacingOccurrences(of: "v", with: "u")
@@ -98,7 +111,7 @@ public enum PinyinVerifier {
     }
 }
 
-extension Character {
+public extension Character {
     var isChineseCharacter: Bool {
         guard let scalar = unicodeScalars.first else { return false }
         return (0x4E00 ... 0x9FFF).contains(scalar.value) || (0x3400 ... 0x4DBF).contains(scalar.value)

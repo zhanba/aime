@@ -1,6 +1,7 @@
 import AimeASR
 import AimePinyin
 import AppKit
+import Carbon
 import SwiftUI
 
 /// 一次语音输入会话的状态机：
@@ -92,6 +93,27 @@ final class AppState: ObservableObject {
             apiKey: settings.apiKey,
             fuzzyRuleIDs: settings.fuzzyRuleIDs
         )
+        SharedConfig.mirrorASRFromApp(
+            backendRaw: settings.asrBackend.rawValue,
+            qwen3ModelID: settings.qwen3ModelID,
+            localeID: settings.localeID
+        )
+        SharedConfig.mirrorPrivacyFromApp(
+            blockedApps: settings.privacyBlockedApps,
+            pureLocalMode: settings.pureLocalMode
+        )
+    }
+
+    private var frontmostBlocked: Bool {
+        SharedConfig.isBlocked(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+    }
+
+    /// aime拼音 是当前输入法时，语音热键由 IME 处理（进 composition），app 侧让路
+    private var aimeIMESelected: Bool {
+        guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              let ptr = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else { return false }
+        let id = Unmanaged<CFString>.fromOpaque(ptr).takeUnretainedValue() as String
+        return id == "com.zhanba.inputmethod.aime"
     }
 
     private func reloadHotkeyIfNeeded() {
@@ -153,6 +175,7 @@ final class AppState: ObservableObject {
     // MARK: - 会话流程
 
     private func hotkeyPressed() {
+        guard !aimeIMESelected else { return }
         guard phase == .idle || phase == .done else { return }
         guard micGranted else {
             fail("未授予麦克风权限，请在系统设置中开启")
@@ -171,8 +194,8 @@ final class AppState: ObservableObject {
         let sessionID = sessionCounter
         let settings = Settings.current()
 
-        // 先采上下文：此刻焦点还在目标应用
-        contextSnapshot = settings.contextEnabled
+        // 先采上下文：此刻焦点还在目标应用（隐私屏蔽应用不读）
+        contextSnapshot = (settings.contextEnabled && !frontmostBlocked)
             ? ContextCapture.capture(maxChars: settings.contextMaxChars)
             : ContextSnapshot(appName: NSWorkspace.shared.frontmostApplication?.localizedName, textBeforeCursor: nil)
         usedContext = false
@@ -180,12 +203,16 @@ final class AppState: ObservableObject {
         liveTranscript = ""
         finalText = ""
 
-        // 识别偏置：光标前文本喂给支持 context 的后端（Qwen3-ASR）
-        var contextHint: String?
+        // 识别偏置：光标前文本 + 用户词库热词（词库双向增强的语音侧入口）
+        var hintParts: [String] = []
         if settings.contextEnabled, let before = contextSnapshot?.textBeforeCursor, !before.isEmpty {
-            contextHint = String(before.suffix(200))
+            hintParts.append(String(before.suffix(200)))
         }
-        let config = sessionConfig(contextHint: contextHint)
+        let hotwords = UserDictionary.shared.topEntries(12)
+        if !hotwords.isEmpty {
+            hintParts.append("常用词：" + hotwords.joined(separator: "、"))
+        }
+        let config = sessionConfig(contextHint: hintParts.isEmpty ? nil : hintParts.joined(separator: "\n"))
 
         phase = .recording
         overlay.show(state: self)
@@ -239,7 +266,7 @@ final class AppState: ObservableObject {
 
                 let settings = Settings.current()
                 var output = raw
-                if !settings.apiKey.isEmpty {
+                if !settings.apiKey.isEmpty, !settings.pureLocalMode, !self.frontmostBlocked {
                     self.phase = .refining
                     self.usedContext = settings.contextEnabled && (self.contextSnapshot?.hasText ?? false)
                     do {
@@ -257,6 +284,9 @@ final class AppState: ObservableObject {
 
                 guard self.sessionCounter == sessionID else { return }
                 self.finalText = output
+                if (2 ... 8).contains(output.count) {
+                    UserDictionary.shared.record(output, source: "voice")
+                }
                 TextInjector.inject(output, method: settings.injectionMethod)
                 self.phase = .done
                 try? await Task.sleep(nanoseconds: 1_800_000_000)

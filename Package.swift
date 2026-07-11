@@ -11,10 +11,19 @@ let package = Package(
         .package(url: "https://github.com/ivan-digital/qwen3-asr-swift", exact: "0.0.21")
     ],
     targets: [
-        // 共享核心：ASR 后端协议与实现、音频采集、XPC 协议。app / daemon / bench 共用。
+        // 轻量 XPC 层：协议 + 客户端 + 数据类型。IME 进程只依赖它（不拖 MLX）。
+        .target(
+            name: "AimeXPC",
+            path: "Sources/AimeXPC",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
+        // 共享核心：ASR 后端协议与实现、音频采集。app / daemon / bench 共用。
         .target(
             name: "AimeASR",
             dependencies: [
+                "AimeXPC",
                 .product(name: "Qwen3ASR", package: "qwen3-asr-swift"),
                 .product(name: "SpeechVAD", package: "qwen3-asr-swift")
             ],
@@ -51,7 +60,7 @@ let package = Package(
         // IMKit 输入法（thin：按键状态机 + 组合区 + 候选窗，转换走 AimePinyin）
         .executableTarget(
             name: "aime-ime",
-            dependencies: ["AimePinyin"],
+            dependencies: ["AimePinyin", "AimeXPC"],
             path: "Sources/aime-ime",
             swiftSettings: [
                 .swiftLanguageMode(.v5)

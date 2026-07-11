@@ -1,4 +1,5 @@
 import AimePinyin
+import AimeXPC
 import Cocoa
 import InputMethodKit
 
@@ -10,28 +11,36 @@ private struct Candidate {
 
     var text: String
     var kind: Kind
-    /// word 类：消耗的音节数；其余类消耗全部
     var syllableCount: Int?
 
     var tag: String {
-        switch kind {
-        case .llmBest: return "AI"
-        case .llmAlternative: return "备"
-        case .localSentence: return "句"
-        case .word: return ""
-        case .raw: return "原"
+        switch self {
+        case let c where c.kind == .llmBest: return "AI"
+        case let c where c.kind == .llmAlternative: return "备"
+        case let c where c.kind == .localSentence: return "句"
+        case let c where c.kind == .raw: return "原"
+        default: return ""
         }
     }
 }
 
-/// M3.5 组合逻辑：
-/// 按键 → 本地引擎（切分+词库+造句，即时）→ 候选条 + 预览；
-/// 180ms 防抖 LLM 整句 → 回验通过则接管首位；
-/// 选词候选 = 部分确认（逐段上屏模型），空格上屏当前预览，永不等待网络。
+/// 确认栈条目：拼音段带原始按键（可回退），语音段无按键（退格转拼音重解释或删除）。
+private struct ConfirmedSegment {
+    enum Source { case pinyin, voice }
+
+    var text: String
+    var keys: String?
+    var source: Source
+}
+
+/// M4 组合逻辑：拼音 + 语音双模态共享一个 composition。
+/// - 语音（按住右 Option）经 daemon XPC 流式进入组合区；
+/// - 消歧自动分流：ASR 结果与当前拼音音节匹配 → 替换预览；不匹配 → 追加语音段；
+/// - Shift+Space 回改：刚上屏的内容重回 composition；
+/// - 退格到语音段：纯中文反推拼音重解释（跨模态纠错 v1）。
 @objc(AimeInputController)
 class AimeInputController: IMKInputController {
-    // 组合状态：已确认前缀（栈，可回退）+ 活动 buffer
-    private var confirmedStack: [(text: String, keys: String)] = []
+    private var confirmedStack: [ConfirmedSegment] = []
     private var rawBuffer = ""
 
     private var engineResult: PinyinEngine.Result?
@@ -45,7 +54,22 @@ class AimeInputController: IMKInputController {
     private var page = 0
     private static let pageSize = 6
 
-    private static let bar = CandidateBarController()
+    // 语音状态
+    private var voiceRecording = false
+    private var voiceLiveText = ""
+    private static let daemonClient = DaemonClient()
+    private static var daemonAvailable = false
+
+    // 回改（Shift+Space）
+    private struct CommitRecord {
+        var text: String
+        var date: Date
+        var cursorAfter: Int
+        var stack: [ConfirmedSegment]
+        var rawBuffer: String
+    }
+
+    private var lastCommit: CommitRecord?
 
     private var confirmedText: String {
         confirmedStack.map(\.text).joined()
@@ -59,12 +83,19 @@ class AimeInputController: IMKInputController {
     // MARK: - IMK 生命周期
 
     override func activateServer(_ sender: Any!) {
-        PinyinEngine.shared.reloadIfChanged() // app 侧可能刚装/删了词库
+        PinyinEngine.shared.reloadIfChanged()
+        UserDictionary.shared.reload()
         resetAll()
+        Task { @MainActor in
+            Self.daemonAvailable = await Self.daemonClient.ping() != nil
+        }
     }
 
     override func deactivateServer(_ sender: Any!) {
-        // 切走输入法：已确认部分 + 原始拼音上屏，不丢输入
+        if voiceRecording {
+            Self.daemonClient.cancelSession()
+            voiceRecording = false
+        }
         if !confirmedText.isEmpty || !rawBuffer.isEmpty {
             commitFinal(confirmedText + rawBuffer)
         }
@@ -72,20 +103,50 @@ class AimeInputController: IMKInputController {
     }
 
     override func recognizedEvents(_ sender: Any!) -> Int {
-        Int(NSEvent.EventTypeMask.keyDown.rawValue)
+        Int(NSEvent.EventTypeMask.keyDown.union(.flagsChanged).rawValue)
     }
+
+    private static let bar = CandidateBarController()
 
     // MARK: - 按键处理
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        guard let event, event.type == .keyDown else { return false }
+        guard let event else { return false }
+
+        // 语音热键：右 Option（keyCode 61）按住/松开
+        if event.type == .flagsChanged {
+            if event.keyCode == 61 {
+                if event.modifierFlags.contains(.option) {
+                    voiceDown()
+                } else {
+                    voiceUp()
+                }
+                return voiceRecording || voiceHandledLast
+            }
+            return false
+        }
+        guard event.type == .keyDown else { return false }
+
+        // 录音中：只响应 Esc（取消语音段），其余吞掉避免破坏状态
+        if voiceRecording {
+            if event.keyCode == 53 {
+                cancelVoice()
+            }
+            return true
+        }
+
         if event.modifierFlags.contains(.command) || event.modifierFlags.contains(.control) {
             if isComposing { commitFinal(confirmedText + rawBuffer) }
             return false
         }
+
         let characters = event.characters ?? ""
 
         if !isComposing {
+            // 回改：Shift+Space 在非组合态把刚上屏的内容拉回 composition
+            if event.keyCode == 49, event.modifierFlags.contains(.shift) {
+                return recallLastCommit()
+            }
             if characters.count == 1, characters.first!.isLowercaseLatin {
                 rawBuffer = characters
                 refresh()
@@ -99,42 +160,33 @@ class AimeInputController: IMKInputController {
         }
 
         switch event.keyCode {
-        case 53: // Esc：整体取消（含已确认段）
+        case 53: // Esc：整体取消
             resetAll()
             return true
-        case 51: // Backspace：先退活动 buffer，空了回退上一次确认
-            if !rawBuffer.isEmpty {
-                rawBuffer = String(rawBuffer.dropLast())
-                if rawBuffer.isEmpty, confirmedStack.isEmpty {
-                    resetAll()
-                } else {
-                    refresh()
-                }
-            } else if let last = confirmedStack.popLast() {
-                rawBuffer = last.keys
-                refresh()
-            }
+        case 51: // Backspace
+            handleBackspace()
             return true
         case 36: // Enter：已确认 + 原始拼音
             commitFinal(confirmedText + rawBuffer)
             return true
-        case 49: // Space：提交高亮候选（默认高亮第一个 = 当前最优）
-            selectCandidate(at: page * Self.pageSize + highlighted)
+        case 49: // Space：提交高亮候选；无候选（纯确认段）则提交确认文本
+            if candidates.isEmpty {
+                commitFinal(confirmedText)
+            } else {
+                selectCandidate(at: page * Self.pageSize + highlighted)
+            }
             return true
-        case 123: // ← 高亮左移
+        case 123:
             moveHighlight(-1)
             return true
-        case 124: // → 高亮右移
+        case 124:
             moveHighlight(1)
             return true
-        case 125: // ↓ 下一页
+        case 125, 48:
             turnPage(1)
             return true
-        case 126: // ↑ 上一页
+        case 126:
             turnPage(-1)
-            return true
-        case 48: // Tab：下一页（习惯兼容）
-            turnPage(1)
             return true
         default:
             break
@@ -145,12 +197,7 @@ class AimeInputController: IMKInputController {
                 selectCandidate(at: page * Self.pageSize + digit - 1)
                 return true
             }
-            if char.isLowercaseLatin || char.isUppercaseLatin || char == "'" {
-                rawBuffer.append(char)
-                refresh()
-                return true
-            }
-            if char.isNumber {
+            if char.isLowercaseLatin || char.isUppercaseLatin || char == "'" || char.isNumber {
                 rawBuffer.append(char)
                 refresh()
                 return true
@@ -164,6 +211,131 @@ class AimeInputController: IMKInputController {
         return false
     }
 
+    private func handleBackspace() {
+        if !rawBuffer.isEmpty {
+            rawBuffer = String(rawBuffer.dropLast())
+            if rawBuffer.isEmpty, confirmedStack.isEmpty {
+                resetAll()
+            } else {
+                refresh()
+            }
+            return
+        }
+        guard let last = confirmedStack.popLast() else { return }
+        if let keys = last.keys {
+            // 拼音段：恢复按键
+            rawBuffer = keys
+        } else if let pinyin = PinyinVerifier.derivePinyin(from: last.text) {
+            // 语音段 + 纯中文：反推拼音重解释（跨模态纠错 v1）——
+            // 整套拼音机器（词候选/逐段确认/LLM）对语音文本直接可用
+            rawBuffer = pinyin
+        }
+        // 语音段含英文/无法反推：直接删除该段
+        refresh()
+    }
+
+    // MARK: - 语音（P2/P3）
+
+    private var voiceHandledLast = false
+
+    private func voiceDown() {
+        guard !voiceRecording else { return }
+        // 只在有文本客户端可组合时启用（IME 活动即有）
+        guard Self.daemonAvailable else {
+            voiceHandledLast = false
+            return
+        }
+        voiceRecording = true
+        voiceHandledLast = true
+        voiceLiveText = ""
+        debounceTask?.cancel()
+
+        let asrConfig = SharedConfig.loadASRConfig()
+        var contextHint = (contextBeforeCursor() ?? "") + confirmedText
+        if !clientBlocked {
+            let hotwords = UserDictionary.shared.topEntries(12).joined(separator: "、")
+            if !hotwords.isEmpty {
+                contextHint += "\n常用词：" + hotwords
+            }
+        }
+        let config = ASRSessionConfig(
+            backend: ASRBackendID(rawValue: asrConfig.backendRaw) ?? .qwen3ASR,
+            localeID: asrConfig.localeID,
+            qwen3ModelID: asrConfig.qwen3ModelID,
+            contextHint: contextHint.isEmpty ? nil : String(contextHint.suffix(300))
+        )
+        Self.daemonClient.onUpdate = { [weak self] text in
+            DispatchQueue.main.async {
+                guard let self, self.voiceRecording else { return }
+                self.voiceLiveText = text
+                self.updateMarkedText()
+            }
+        }
+        Self.daemonClient.onLevel = nil
+        Task { @MainActor in
+            let json = (try? JSONEncoder().encode(config)) ?? Data()
+            if let error = await Self.daemonClient.startSession(configJSON: json) {
+                NSLog("aime-ime 语音启动失败: \(error)")
+                self.voiceRecording = false
+            }
+            self.updateMarkedText()
+        }
+    }
+
+    private func voiceUp() {
+        guard voiceRecording else { return }
+        voiceRecording = false
+        Task { @MainActor in
+            let result = await Self.daemonClient.finishSession()
+            guard case .success(let asr) = result else {
+                self.voiceLiveText = ""
+                self.updateMarkedText()
+                return
+            }
+            self.voiceLiveText = ""
+            self.integrateVoiceResult(asr.text)
+        }
+    }
+
+    private func cancelVoice() {
+        voiceRecording = false
+        voiceLiveText = ""
+        Self.daemonClient.cancelSession()
+        updateMarkedText()
+    }
+
+    /// P3 消歧分流：ASR 文本与当前拼音音节匹配 → 是"把拼音说了一遍"，替换预览；
+    /// 不匹配 → 是新内容，追加为语音段。
+    private func integrateVoiceResult(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "。，！？"))
+        guard !trimmed.isEmpty else {
+            updateMarkedText()
+            return
+        }
+        if !rawBuffer.isEmpty, let segments = engineResult?.segments {
+            let verdict = PinyinVerifier.verify(candidate: trimmed, segments: segments)
+            if verdict != .reject {
+                // 消歧：语音结果占用转换槽（声调补全了无声调拼音的信息）
+                llmConversion = PinyinConversion(best: trimmed, alternative: llmConversion?.best)
+                convertedFor = rawBuffer
+                llmVerdict = verdict
+                rebuildCandidates()
+                updateMarkedText()
+                return
+            }
+        }
+        // 追加：先冻结当前拼音预览，再入语音段
+        if !rawBuffer.isEmpty {
+            confirmedStack.append(ConfirmedSegment(text: currentPreview, keys: rawBuffer, source: .pinyin))
+            clearActiveBuffer()
+        }
+        confirmedStack.append(ConfirmedSegment(text: trimmed, keys: nil, source: .voice))
+        learnVoice(trimmed)
+        rebuildCandidates()
+        updateMarkedText()
+    }
+
     // MARK: - 状态
 
     private var isComposing: Bool {
@@ -174,7 +346,6 @@ class AimeInputController: IMKInputController {
         llmConversion != nil && convertedFor == rawBuffer
     }
 
-    /// 当前预览 = LLM（过回验）> 本地整句 > 原始拼音
     private var currentPreview: String {
         if llmFresh, llmVerdict != .reject, let best = llmConversion?.best {
             return best
@@ -182,16 +353,22 @@ class AimeInputController: IMKInputController {
         return engineResult?.localSentence ?? rawBuffer
     }
 
-    private func resetAll() {
-        confirmedStack = []
+    private func clearActiveBuffer() {
         rawBuffer = ""
         engineResult = nil
         llmConversion = nil
         convertedFor = ""
         debounceTask?.cancel()
+    }
+
+    private func resetAll() {
+        confirmedStack = []
+        clearActiveBuffer()
         candidates = []
         highlighted = 0
         page = 0
+        voiceRecording = false
+        voiceLiveText = ""
         Self.bar.hide()
         client()?.setMarkedText(
             "", selectionRange: NSRange(location: 0, length: 0), replacementRange: Self.replacementRange
@@ -199,18 +376,52 @@ class AimeInputController: IMKInputController {
     }
 
     private func commitFinal(_ text: String) {
-        if !text.isEmpty {
-            client()?.insertText(text, replacementRange: Self.replacementRange)
+        if !text.isEmpty, let client = client() {
+            let stackSnapshot = confirmedStack
+            let bufferSnapshot = rawBuffer
+            client.insertText(text, replacementRange: Self.replacementRange)
+            let cursor = client.selectedRange().location
+            lastCommit = CommitRecord(
+                text: text, date: Date(), cursorAfter: cursor,
+                stack: stackSnapshot, rawBuffer: bufferSnapshot
+            )
             learn(text)
         }
         resetAll()
     }
 
-    // MARK: - 刷新（每次按键，同步毫秒级）
+    // MARK: - 回改（P4）
+
+    private func recallLastCommit() -> Bool {
+        guard let record = lastCommit, let client = client() else { return false }
+        lastCommit = nil
+        // 守卫：10 秒内 && 光标未移动
+        guard Date().timeIntervalSince(record.date) < 10 else { return false }
+        let cursor = client.selectedRange().location
+        guard cursor != NSNotFound, cursor == record.cursorAfter else { return false }
+        let length = record.text.utf16.count
+        guard cursor >= length else { return false }
+        // 删掉刚上屏的文本，恢复组合态
+        client.insertText("", replacementRange: NSRange(location: cursor - length, length: length))
+        confirmedStack = record.stack
+        rawBuffer = record.rawBuffer
+        if !rawBuffer.isEmpty {
+            refresh()
+        } else if let last = confirmedStack.last, last.keys == nil {
+            // 纯语音提交的回改：直接进入"退格转拼音"路径可再修
+            rebuildCandidates()
+            updateMarkedText()
+        } else {
+            rebuildCandidates()
+            updateMarkedText()
+        }
+        return true
+    }
+
+    // MARK: - 刷新与候选
 
     private func refresh() {
         guard !rawBuffer.isEmpty else {
-            // 活动 buffer 空但有确认段：只显示确认段
             updateMarkedText()
             rebuildCandidates()
             return
@@ -227,28 +438,28 @@ class AimeInputController: IMKInputController {
 
     private func rebuildCandidates() {
         var list: [Candidate] = []
-        if llmFresh, let conversion = llmConversion {
-            switch llmVerdict {
-            case .pass:
-                list.append(Candidate(text: conversion.best, kind: .llmBest, syllableCount: nil))
-                if let alternative = conversion.alternative,
-                   PinyinVerifier.verify(candidate: alternative, segments: engineResult?.segments ?? []) == .pass {
-                    list.append(Candidate(text: alternative, kind: .llmAlternative, syllableCount: nil))
-                }
-            case .demote, .reject:
-                break // demote 的稍后插在词候选后；reject 不进候选
-            }
-        }
-        if let local = engineResult?.localSentence, !list.contains(where: { $0.text == local }) {
-            list.append(Candidate(text: local, kind: .localSentence, syllableCount: nil))
-        }
-        for word in engineResult?.wordCandidates.prefix(16) ?? [] where !list.contains(where: { $0.text == word.word }) {
-            list.append(Candidate(text: word.word, kind: .word, syllableCount: word.syllableCount))
-        }
-        if llmFresh, llmVerdict == .demote, let best = llmConversion?.best {
-            list.append(Candidate(text: best, kind: .llmBest, syllableCount: nil))
-        }
         if !rawBuffer.isEmpty {
+            if llmFresh, let conversion = llmConversion {
+                switch llmVerdict {
+                case .pass:
+                    list.append(Candidate(text: conversion.best, kind: .llmBest, syllableCount: nil))
+                    if let alternative = conversion.alternative,
+                       PinyinVerifier.verify(candidate: alternative, segments: engineResult?.segments ?? []) == .pass {
+                        list.append(Candidate(text: alternative, kind: .llmAlternative, syllableCount: nil))
+                    }
+                case .demote, .reject:
+                    break
+                }
+            }
+            if let local = engineResult?.localSentence, !list.contains(where: { $0.text == local }) {
+                list.append(Candidate(text: local, kind: .localSentence, syllableCount: nil))
+            }
+            for word in engineResult?.wordCandidates.prefix(16) ?? [] where !list.contains(where: { $0.text == word.word }) {
+                list.append(Candidate(text: word.word, kind: .word, syllableCount: word.syllableCount))
+            }
+            if llmFresh, llmVerdict == .demote, let best = llmConversion?.best {
+                list.append(Candidate(text: best, kind: .llmBest, syllableCount: nil))
+            }
             list.append(Candidate(text: rawBuffer, kind: .raw, syllableCount: nil))
         }
         candidates = list
@@ -256,8 +467,6 @@ class AimeInputController: IMKInputController {
         page = 0
         showBar()
     }
-
-    // MARK: - 候选条
 
     private func showBar() {
         guard isComposing, !candidates.isEmpty else {
@@ -311,7 +520,6 @@ class AimeInputController: IMKInputController {
         }
     }
 
-    /// 逐段确认：提交词、消耗按键、剩余重新转换
     private func partialConfirm(_ candidate: Candidate) {
         guard let syllableCount = candidate.syllableCount,
               let segments = engineResult?.segments else { return }
@@ -320,13 +528,13 @@ class AimeInputController: IMKInputController {
         )
         guard keyLength > 0 else { return }
         let consumedKeys = String(rawBuffer.prefix(keyLength))
-        confirmedStack.append((text: candidate.text, keys: consumedKeys))
-        rawBuffer = String(rawBuffer.dropFirst(keyLength))
+        confirmedStack.append(ConfirmedSegment(text: candidate.text, keys: consumedKeys, source: .pinyin))
+        let remaining = String(rawBuffer.dropFirst(keyLength))
+        clearActiveBuffer()
+        rawBuffer = remaining
         if rawBuffer.isEmpty {
             commitFinal(confirmedText)
         } else {
-            llmConversion = nil
-            convertedFor = ""
             refresh()
         }
     }
@@ -335,7 +543,7 @@ class AimeInputController: IMKInputController {
 
     private static let replacementRange = NSRange(location: NSNotFound, length: 0)
 
-    /// 已确认段：粗下划线；预览段：LLM 过验=实线，本地/原文=点线
+    /// 已确认段=粗下划线；拼音预览=实线（LLM 过验）/点线；录音流式段=点线
     private func updateMarkedText() {
         guard let client = client() else { return }
         let attributed = NSMutableAttributedString()
@@ -346,13 +554,19 @@ class AimeInputController: IMKInputController {
             ]))
         }
         if !rawBuffer.isEmpty {
-            let preview = currentPreview
             let solid = llmFresh && llmVerdict == .pass
-            attributed.append(NSAttributedString(string: preview, attributes: [
+            attributed.append(NSAttributedString(string: currentPreview, attributes: [
                 .underlineStyle: solid
                     ? NSUnderlineStyle.single.rawValue
                     : NSUnderlineStyle.patternDot.union(.single).rawValue,
                 .markedClauseSegment: 1,
+            ]))
+        }
+        if voiceRecording {
+            let live = voiceLiveText.isEmpty ? "🎤…" : voiceLiveText
+            attributed.append(NSAttributedString(string: live, attributes: [
+                .underlineStyle: NSUnderlineStyle.patternDot.union(.single).rawValue,
+                .markedClauseSegment: 2,
             ]))
         }
         client.setMarkedText(
@@ -376,7 +590,9 @@ class AimeInputController: IMKInputController {
 
     @MainActor
     private func convertNow(_ snapshot: String) async {
-        guard snapshot == rawBuffer, !snapshot.isEmpty else { return }
+        guard snapshot == rawBuffer, !snapshot.isEmpty, !voiceRecording else { return }
+        // 隐私：纯本地模式 / 屏蔽应用内不发 LLM，本地整句照常工作
+        guard !SharedConfig.pureLocalMode, !clientBlocked else { return }
         let config = SharedConfig.loadLLMConfig()
         guard !config.apiKey.isEmpty else { return }
         var context = contextBeforeCursor() ?? ""
@@ -389,7 +605,7 @@ class AimeInputController: IMKInputController {
                 userDictEntries: UserDictionary.shared.topEntries(),
                 config: config
             )
-            guard snapshot == rawBuffer else { return }
+            guard snapshot == rawBuffer, !voiceRecording else { return }
             llmConversion = result
             convertedFor = snapshot
             llmVerdict = PinyinVerifier.verify(
@@ -398,14 +614,18 @@ class AimeInputController: IMKInputController {
             rebuildCandidates()
             updateMarkedText()
         } catch {
-            // LLM 失败：本地预览继续工作，无需打断
+            // LLM 失败：本地预览继续工作
         }
     }
 
     // MARK: - 上下文与词库
 
+    private var clientBlocked: Bool {
+        SharedConfig.isBlocked(bundleID: client()?.bundleIdentifier())
+    }
+
     private func contextBeforeCursor() -> String? {
-        guard let client = client() else { return nil }
+        guard !clientBlocked, let client = client() else { return nil }
         let selection = client.selectedRange()
         guard selection.location != NSNotFound, selection.location > 0 else { return nil }
         let start = max(0, selection.location - 120)
@@ -427,6 +647,12 @@ class AimeInputController: IMKInputController {
         if englishRun.count >= 2 { UserDictionary.shared.record(englishRun, source: "pinyin") }
         if (2 ... 8).contains(text.count) {
             UserDictionary.shared.record(text, source: "pinyin")
+        }
+    }
+
+    private func learnVoice(_ text: String) {
+        if (2 ... 8).contains(text.count) {
+            UserDictionary.shared.record(text, source: "voice")
         }
     }
 }

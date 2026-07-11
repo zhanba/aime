@@ -13,6 +13,10 @@ struct SettingsView: View {
                 .tabItem { Label("精修", systemImage: "sparkles") }
             InputSettingsTab()
                 .tabItem { Label("上下文与注入", systemImage: "text.cursor") }
+            DictionaryTab()
+                .tabItem { Label("教它", systemImage: "book") }
+            PrivacyTab()
+                .tabItem { Label("隐私", systemImage: "hand.raised") }
             AdvancedSettingsTab()
                 .tabItem { Label("高级", systemImage: "gearshape.2") }
         }
@@ -173,7 +177,7 @@ private struct AdvancedSettingsTab: View {
 
     var body: some View {
         Form {
-            Section("后台推理服务（实验性）") {
+            Section("后台推理服务") {
                 Toggle("使用 aime-daemon 承载模型与录音", isOn: $useDaemon)
                 HStack {
                     Text("状态：\(state.daemon.statusText) · 会话运行于 \(state.executionMode)")
@@ -185,7 +189,7 @@ private struct AdvancedSettingsTab: View {
                     }
                     Button("重新注册") { state.daemon.register() }
                 }
-                Text("开启后模型常驻后台进程，app 重启不用重新加载；首次使用需为 aime-daemon 单独授予麦克风权限。不可用时自动回退进程内运行。")
+                Text("模型常驻后台进程（app 重启不重载）；输入法内的语音输入依赖此服务。首次语音需为 aime-daemon 授予麦克风权限。不可用时 app 侧自动回退进程内运行。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

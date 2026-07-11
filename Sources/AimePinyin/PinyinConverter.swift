@@ -20,6 +20,11 @@ public struct PinyinConversion: Sendable {
     public var best: String
     /// 句级备选（可能为空）
     public var alternative: String?
+
+    public init(best: String, alternative: String? = nil) {
+        self.best = best
+        self.alternative = alternative
+    }
 }
 
 /// 结构化 prompt：原始按键 + 切分 + 模糊/修复标注 + 光标前文 + 用户词库。

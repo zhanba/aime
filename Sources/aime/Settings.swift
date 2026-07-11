@@ -7,6 +7,8 @@ enum SettingsKey {
     static let asrBackend = "asrBackend"
     static let useDaemon = "useDaemon"
     static let fuzzyRules = "fuzzyRules"
+    static let privacyBlockedApps = "privacyBlockedApps"
+    static let pureLocalMode = "pureLocalMode"
     static let qwen3ModelID = "qwen3ModelID"
     static let apiBaseURL = "apiBaseURL"
     static let apiModel = "apiModel"
@@ -70,6 +72,8 @@ struct Settings {
     var asrBackend: ASRBackendID
     var useDaemon: Bool
     var fuzzyRuleIDs: Set<String>
+    var privacyBlockedApps: [String]
+    var pureLocalMode: Bool
     var qwen3ModelID: String
     var apiBaseURL: String
     var apiModel: String
@@ -85,8 +89,10 @@ struct Settings {
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             SettingsKey.asrBackend: ASRBackendID.speechAnalyzer.rawValue,
-            SettingsKey.useDaemon: false,
+            SettingsKey.useDaemon: true,
             SettingsKey.fuzzyRules: Array(FuzzyRule.defaultEnabled),
+            SettingsKey.privacyBlockedApps: [String](),
+            SettingsKey.pureLocalMode: false,
             SettingsKey.qwen3ModelID: Qwen3ModelChoice.small4bit.rawValue,
             SettingsKey.apiBaseURL: "https://api.deepseek.com/v1",
             SettingsKey.apiModel: "deepseek-chat",
@@ -107,6 +113,8 @@ struct Settings {
             asrBackend: ASRBackendID(rawValue: d.string(forKey: SettingsKey.asrBackend) ?? "") ?? .speechAnalyzer,
             useDaemon: d.bool(forKey: SettingsKey.useDaemon),
             fuzzyRuleIDs: Set((d.array(forKey: SettingsKey.fuzzyRules) as? [String]) ?? Array(FuzzyRule.defaultEnabled)),
+            privacyBlockedApps: (d.array(forKey: SettingsKey.privacyBlockedApps) as? [String]) ?? [],
+            pureLocalMode: d.bool(forKey: SettingsKey.pureLocalMode),
             qwen3ModelID: d.string(forKey: SettingsKey.qwen3ModelID) ?? Qwen3ModelChoice.small4bit.rawValue,
             apiBaseURL: d.string(forKey: SettingsKey.apiBaseURL) ?? "https://api.deepseek.com/v1",
             apiModel: d.string(forKey: SettingsKey.apiModel) ?? "deepseek-chat",

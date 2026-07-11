@@ -19,6 +19,55 @@ public enum SharedConfig {
         if stored != fuzzyRuleIDs { d.set(Array(fuzzyRuleIDs), forKey: "fuzzyRuleIDs") }
     }
 
+    /// IME 进程发起语音会话所需的 ASR 配置（app 设置变更时镜像）。
+    public struct SharedASRConfig {
+        public var backendRaw: String
+        public var qwen3ModelID: String
+        public var localeID: String
+    }
+
+    public static func mirrorASRFromApp(backendRaw: String, qwen3ModelID: String, localeID: String) {
+        let d = defaults
+        if d.string(forKey: "asrBackend") != backendRaw { d.set(backendRaw, forKey: "asrBackend") }
+        if d.string(forKey: "qwen3ModelID") != qwen3ModelID { d.set(qwen3ModelID, forKey: "qwen3ModelID") }
+        if d.string(forKey: "localeID") != localeID { d.set(localeID, forKey: "localeID") }
+    }
+
+    // MARK: - 隐私（P6）
+
+    public static func mirrorPrivacyFromApp(blockedApps: [String], pureLocalMode: Bool) {
+        let d = defaults
+        if (d.array(forKey: "privacyBlockedApps") as? [String]) ?? [] != blockedApps {
+            d.set(blockedApps, forKey: "privacyBlockedApps")
+        }
+        if d.bool(forKey: "pureLocalMode") != pureLocalMode {
+            d.set(pureLocalMode, forKey: "pureLocalMode")
+        }
+    }
+
+    public static var privacyBlockedApps: [String] {
+        (defaults.array(forKey: "privacyBlockedApps") as? [String]) ?? []
+    }
+
+    public static var pureLocalMode: Bool {
+        defaults.bool(forKey: "pureLocalMode")
+    }
+
+    /// 该应用是否禁用上下文读取与 LLM（bundle id 前缀匹配）
+    public static func isBlocked(bundleID: String?) -> Bool {
+        guard let bundleID, !bundleID.isEmpty else { return false }
+        return privacyBlockedApps.contains { bundleID == $0 || bundleID.hasPrefix($0 + ".") }
+    }
+
+    public static func loadASRConfig() -> SharedASRConfig {
+        let d = defaults
+        return SharedASRConfig(
+            backendRaw: d.string(forKey: "asrBackend") ?? "qwen3ASR",
+            qwen3ModelID: d.string(forKey: "qwen3ModelID") ?? "aufklarer/Qwen3-ASR-0.6B-MLX-4bit",
+            localeID: d.string(forKey: "localeID") ?? "zh_CN"
+        )
+    }
+
     public static func loadLLMConfig() -> PinyinLLMConfig {
         let d = defaults
         let fuzzy = (d.array(forKey: "fuzzyRuleIDs") as? [String]).map(Set.init)
