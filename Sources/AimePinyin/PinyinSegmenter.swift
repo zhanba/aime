@@ -273,12 +273,13 @@ public extension PinyinSegmenter {
         return parts.joined(separator: " ")
     }
 
-    /// 边界歧义变体：n/g/元音在音节交界处的归属歧义（fangan = fan|gan vs fang|an）。
-    /// DP 只保留单一最优路径会把另一种切法整个丢掉——这里补回，供
+    /// 边界歧义变体：n/g/元音在音节交界处的归属歧义（fangan = fan|gan vs fang|an），
+    /// 以及单音节的拆分歧义（shanchuanniu 的 chuan = chu|an → 删除按钮）。
+    /// DP 只保留单一最优路径（且偏好更少音节数）会把另一种切法整个丢掉——这里补回，供
     /// 本地造句（双路 Viterbi 择优）、词候选合并、LLM prompt 与回验器使用。
-    /// 仅对 exact 音节对生效；每个交界独立产生一个变体，上限 3 个。
+    /// 仅对 exact 音节生效；每个交界/音节独立产生一个变体，上限 3 个。
     static func boundaryVariants(of syllables: [Syllable], enabledFuzzyRuleIDs: Set<String> = FuzzyRule.defaultEnabled) -> [[Syllable]] {
-        guard syllables.count >= 2 else { return [] }
+        guard !syllables.isEmpty else { return [] }
         var variants: [[Syllable]] = []
 
         func makeSyllable(_ text: String) -> Syllable {
@@ -318,6 +319,24 @@ public extension PinyinSegmenter {
                 variant[index] = makeSyllable(newA)
                 variant[index + 1] = makeSyllable(newB)
                 variants.append(variant)
+            }
+        }
+
+        // 单音节拆分：DP 按音节数最少切分，chuan 永远赢过 chu|an，
+        // 拆开的读法只能在变体里补回。每个音节取第一个合法拆点。
+        for index in syllables.indices {
+            guard variants.count < 3 else { break }
+            let syllable = syllables[index]
+            guard syllable.source == .exact, syllable.text.count >= 3 else { continue }
+            let text = Array(syllable.text)
+            for splitAt in 1 ..< text.count {
+                let head = String(text[..<splitAt])
+                let tail = String(text[splitAt...])
+                guard PinyinTable.isValid(head), PinyinTable.isValid(tail) else { continue }
+                var variant = syllables
+                variant.replaceSubrange(index ... index, with: [makeSyllable(head), makeSyllable(tail)])
+                variants.append(variant)
+                break
             }
         }
         return variants

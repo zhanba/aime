@@ -36,17 +36,21 @@ final class LexiconTests: XCTestCase {
         安	an	30000
         反	fan	35000
         感	gan	25000
+        删除	shan chu	40000
+        按钮	an niu	30000
+        山川	shan chuan	8000
+        牛	niu	30000
         坏音节	bad syl	1
         """.write(to: dict, atomically: true, encoding: .utf8)
         lexiconURL = dir.appendingPathComponent("lexicon.bin")
         let (kept, dropped) = try Lexicon.compile(rimeDicts: [dict], to: lexiconURL)
-        XCTAssertEqual(kept, 24)
+        XCTAssertEqual(kept, 28)
         XCTAssertEqual(dropped, 1) // "bad syl" 非法音节被过滤
     }
 
     func testExactAndPrefixQuery() throws {
         let lexicon = try XCTUnwrap(Lexicon(url: lexiconURL))
-        XCTAssertEqual(lexicon.entryCount, 24)
+        XCTAssertEqual(lexicon.entryCount, 28)
         XCTAssertEqual(lexicon.exactMatches(key: "shi jie").map(\.word), ["世界"])
         XCTAssertTrue(lexicon.hasPrefix(key: "jin"))       // 金 / 今天
         XCTAssertTrue(lexicon.hasPrefix(key: "jin tian"))
@@ -77,8 +81,26 @@ final class LexiconTests: XCTestCase {
         let result = engine.analyze("jintianxiawukaihui")
         XCTAssertEqual(result.localSentence, "今天下午开会")
         XCTAssertEqual(result.wordCandidates.first?.word, "今天")
-        // 词消耗按键长度映射
-        XCTAssertEqual(PinyinEngine.consumedKeyLength(raw: "jintianxiawukaihui", segments: result.segments, syllableCount: 2), 7)
+        // 词消耗按键长度映射（今天 = jin+tian = 7 键）
+        let first = try XCTUnwrap(result.wordCandidates.first)
+        XCTAssertEqual(first.typedLength, 7)
+        XCTAssertEqual(PinyinEngine.consumedKeyLength(raw: "jintianxiawukaihui", typedLength: first.typedLength), 7)
+        // 分隔符计入消耗（jin'tian → 8 键）
+        XCTAssertEqual(PinyinEngine.consumedKeyLength(raw: "jin'tianxiawu", typedLength: 7), 8)
+    }
+
+    func testSyllableSplitAmbiguityReachable() throws {
+        // shanchuanniu：主切分 shan|chuan|niu（音节数更少必胜），
+        // 删除按钮需要 chuan 拆成 chu|an 的变体路径
+        let engine = PinyinEngine(lexiconURL: lexiconURL)
+        let result = engine.analyze("shanchuanniu")
+        let words = result.wordCandidates.map(\.word)
+        XCTAssertTrue(words.contains("删除"), "\(words)")
+        XCTAssertTrue(result.boundaryAlternatives.contains("shan chu an niu"), "\(result.boundaryAlternatives)")
+        // 部分上屏「删除」只消耗 shanchu 7 键，剩 anniu
+        let shanchu = try XCTUnwrap(result.wordCandidates.first { $0.word == "删除" })
+        XCTAssertEqual(shanchu.typedLength, 7)
+        XCTAssertEqual(result.localSentence, "删除按钮", "词库若含 按钮 应整句修对")
     }
 
     func testBoundaryAmbiguityReachable() throws {

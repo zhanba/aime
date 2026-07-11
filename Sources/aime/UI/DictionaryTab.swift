@@ -24,29 +24,45 @@ struct DictionaryTab: View {
                 if entries.isEmpty {
                     Text("还没有词条——用 aime拼音 打字或语音输入后会自动积累")
                         .foregroundStyle(.secondary)
-                }
-                ForEach(entries.prefix(50)) { entry in
-                    HStack {
-                        Text(entry.text)
-                        Text(entry.source == "voice" ? "🎤" : entry.source == "manual" ? "✍️" : "⌨️")
-                            .font(.caption)
-                        Spacer()
-                        Text("×\(entry.count) · \(entry.lastUsed.formatted(.relative(presentation: .named)))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button(role: .destructive) {
-                            UserDictionary.shared.remove(entry.text)
-                            reload()
-                        } label: {
-                            Image(systemName: "trash")
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(entries) { entry in
+                                entryRow(entry)
+                                    .padding(.vertical, 4)
+                                if entry.id != entries.last?.id {
+                                    Divider()
+                                }
+                            }
                         }
-                        .buttonStyle(.borderless)
+                        // 给悬浮滚动条让位，避免盖住行尾的删除按钮
+                        .padding(.trailing, 16)
                     }
+                    .frame(height: 280)
                 }
             }
         }
         .formStyle(.grouped)
         .onAppear { reload() }
+    }
+
+    private func entryRow(_ entry: UserDictionary.Entry) -> some View {
+        HStack {
+            Text(entry.text)
+            Text(entry.source == "voice" ? "🎤" : entry.source == "manual" ? "✍️" : "⌨️")
+                .font(.caption)
+            Spacer()
+            Text("×\(entry.count) · \(entry.lastUsed.formatted(.relative(presentation: .named)))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button(role: .destructive) {
+                UserDictionary.shared.remove(entry.text)
+                reload()
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+        }
     }
 
     private func reload() {

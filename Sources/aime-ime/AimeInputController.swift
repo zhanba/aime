@@ -11,7 +11,7 @@ private struct Candidate {
 
     var text: String
     var kind: Kind
-    var syllableCount: Int?
+    var typedLength: Int?
 
     var tag: String {
         switch self {
@@ -442,25 +442,25 @@ class AimeInputController: IMKInputController {
             if llmFresh, let conversion = llmConversion {
                 switch llmVerdict {
                 case .pass:
-                    list.append(Candidate(text: conversion.best, kind: .llmBest, syllableCount: nil))
+                    list.append(Candidate(text: conversion.best, kind: .llmBest, typedLength: nil))
                     if let alternative = conversion.alternative,
                        PinyinVerifier.verify(candidate: alternative, segments: engineResult?.segments ?? []) == .pass {
-                        list.append(Candidate(text: alternative, kind: .llmAlternative, syllableCount: nil))
+                        list.append(Candidate(text: alternative, kind: .llmAlternative, typedLength: nil))
                     }
                 case .demote, .reject:
                     break
                 }
             }
             if let local = engineResult?.localSentence, !list.contains(where: { $0.text == local }) {
-                list.append(Candidate(text: local, kind: .localSentence, syllableCount: nil))
+                list.append(Candidate(text: local, kind: .localSentence, typedLength: nil))
             }
             for word in engineResult?.wordCandidates.prefix(16) ?? [] where !list.contains(where: { $0.text == word.word }) {
-                list.append(Candidate(text: word.word, kind: .word, syllableCount: word.syllableCount))
+                list.append(Candidate(text: word.word, kind: .word, typedLength: word.typedLength))
             }
             if llmFresh, llmVerdict == .demote, let best = llmConversion?.best {
-                list.append(Candidate(text: best, kind: .llmBest, syllableCount: nil))
+                list.append(Candidate(text: best, kind: .llmBest, typedLength: nil))
             }
-            list.append(Candidate(text: rawBuffer, kind: .raw, syllableCount: nil))
+            list.append(Candidate(text: rawBuffer, kind: .raw, typedLength: nil))
         }
         candidates = list
         highlighted = 0
@@ -521,11 +521,8 @@ class AimeInputController: IMKInputController {
     }
 
     private func partialConfirm(_ candidate: Candidate) {
-        guard let syllableCount = candidate.syllableCount,
-              let segments = engineResult?.segments else { return }
-        let keyLength = PinyinEngine.consumedKeyLength(
-            raw: rawBuffer, segments: segments, syllableCount: syllableCount
-        )
+        guard let typedLength = candidate.typedLength else { return }
+        let keyLength = PinyinEngine.consumedKeyLength(raw: rawBuffer, typedLength: typedLength)
         guard keyLength > 0 else { return }
         let consumedKeys = String(rawBuffer.prefix(keyLength))
         confirmedStack.append(ConfirmedSegment(text: candidate.text, keys: consumedKeys, source: .pinyin))

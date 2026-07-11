@@ -5,6 +5,9 @@ public struct WordCandidate: Equatable, Sendable {
     public var word: String
     /// 消耗的音节数（相对活动段起点）
     public var syllableCount: Int
+    /// 消耗的实际按键数（音节 typed 长度之和）。部分上屏必须用它：
+    /// 边界变体的音节数与主切分可以不同（chuan vs chu|an），按键数才是稳定量。
+    public var typedLength: Int
     /// 排序得分（log 词频 + 变换可信度）
     public var score: Double
 }
@@ -47,8 +50,10 @@ public struct SentenceComposer {
         // (当前 key, 累计可信度 log)
         var frontier: [(key: String, credibilityLog: Double)] = [("", 0)]
         var length = 0
+        var typedLength = 0
         while !frontier.isEmpty, start + length < syllables.count, length < maxLength {
             let syllable = syllables[start + length]
+            typedLength += syllable.typed.count
             var next: [(String, Double)] = []
             for (key, credibilityLog) in frontier {
                 for (text, credibility) in Self.hypotheses(for: syllable) {
@@ -60,6 +65,7 @@ public struct SentenceComposer {
                         results.append(WordCandidate(
                             word: entry.word,
                             syllableCount: length + 1,
+                            typedLength: typedLength,
                             score: log(entry.weight + 1) + newLog
                         ))
                     }
@@ -94,7 +100,10 @@ public struct SentenceComposer {
             var edges = wordMatches(syllables: syllables, from: position)
             // 兜底：该位置无任何词（如 partial 尾巴）→ 音节原文透传
             if !edges.contains(where: { $0.syllableCount == 1 }) {
-                edges.append(WordCandidate(word: syllables[position].typed, syllableCount: 1, score: -30))
+                edges.append(WordCandidate(
+                    word: syllables[position].typed, syllableCount: 1,
+                    typedLength: syllables[position].typed.count, score: -30
+                ))
             }
             for edge in edges {
                 let target = position + edge.syllableCount
@@ -222,21 +231,16 @@ public final class PinyinEngine {
     }
 
     /// 词消耗的原始按键长度（含被跳过的分隔符），部分上屏用。
-    public static func consumedKeyLength(raw: String, segments: [PinyinSegment], syllableCount: Int) -> Int {
-        guard let firstPinyin = segments.first(where: {
-            if case .pinyin = $0.kind { return true }
-            return false
-        }), case .pinyin(let syllables) = firstPinyin.kind else { return 0 }
-        let consumedTyped = syllables.prefix(syllableCount).map(\.typed).joined()
-        var typedIndex = consumedTyped.startIndex
+    /// typedLength 是候选自带的按键数（WordCandidate.typedLength）——
+    /// 不能按主切分音节数换算：候选可能来自音节数不同的边界变体。
+    public static func consumedKeyLength(raw: String, typedLength: Int) -> Int {
+        var remaining = typedLength
         var rawCount = 0
         for char in raw {
-            guard typedIndex < consumedTyped.endIndex else { break }
+            guard remaining > 0 else { break }
             rawCount += 1
             if char == "'" || char == " " { continue }
-            if char == consumedTyped[typedIndex] {
-                typedIndex = consumedTyped.index(after: typedIndex)
-            }
+            remaining -= 1
         }
         return rawCount
     }
