@@ -1,21 +1,34 @@
 import AimeASR
 import SwiftUI
 
+/// 分页式设置窗（macOS 标准形态），每页内容紧凑，避免单页 Form 把窗口撑得过高。
 struct SettingsView: View {
+    var body: some View {
+        TabView {
+            VoiceSettingsTab()
+                .tabItem { Label("语音", systemImage: "mic") }
+            RefineSettingsTab()
+                .tabItem { Label("精修", systemImage: "sparkles") }
+            InputSettingsTab()
+                .tabItem { Label("上下文与注入", systemImage: "text.cursor") }
+            AdvancedSettingsTab()
+                .tabItem { Label("高级", systemImage: "gearshape.2") }
+        }
+        .frame(width: 560)
+        .fixedSize(horizontal: false, vertical: true)
+        .onAppear {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+}
+
+// MARK: - 语音
+
+private struct VoiceSettingsTab: View {
     @AppStorage(SettingsKey.asrBackend) private var asrBackend = ASRBackendID.speechAnalyzer.rawValue
     @AppStorage(SettingsKey.qwen3ModelID) private var qwen3ModelID = Qwen3ModelChoice.small4bit.rawValue
-    @AppStorage(SettingsKey.useDaemon) private var useDaemon = false
     @AppStorage(SettingsKey.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
     @AppStorage(SettingsKey.localeID) private var localeID = "zh_CN"
-    @AppStorage(SettingsKey.apiBaseURL) private var apiBaseURL = "https://api.deepseek.com/v1"
-    @AppStorage(SettingsKey.apiModel) private var apiModel = "deepseek-chat"
-    @AppStorage(SettingsKey.apiKey) private var apiKey = ""
-    @AppStorage(SettingsKey.removeFillers) private var removeFillers = true
-    @AppStorage(SettingsKey.formalize) private var formalize = false
-    @AppStorage(SettingsKey.contextEnabled) private var contextEnabled = true
-    @AppStorage(SettingsKey.contextMaxChars) private var contextMaxChars = 200
-    @AppStorage(SettingsKey.injectionMethod) private var injectionMethod = InjectionMethod.paste.rawValue
-
     @ObservedObject private var state = AppState.shared
 
     private let locales: [(id: String, name: String)] = [
@@ -26,7 +39,7 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("语音输入") {
+            Section {
                 Picker("识别引擎", selection: $asrBackend) {
                     ForEach(ASRBackendID.allCases) { backend in
                         Text(backend.displayName).tag(backend.rawValue)
@@ -45,6 +58,8 @@ struct SettingsView: View {
                     }
                     modelDiskRow
                 }
+            }
+            Section {
                 Picker("按住说话快捷键", selection: $hotkey) {
                     ForEach(HotkeyChoice.allCases) { choice in
                         Text(choice.displayName).tag(choice.rawValue)
@@ -55,20 +70,70 @@ struct SettingsView: View {
                         Text(locale.name).tag(locale.id)
                     }
                 }
+            } footer: {
                 Text("中英混说选“中文（普通话）”即可，英文术语的纠错交给精修层。切换语言后首次使用会下载对应模型。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
+        }
+        .formStyle(.grouped)
+    }
 
-            Section("LLM 精修") {
+    /// 当前 Qwen3 档位的磁盘占用与管理入口
+    @ViewBuilder
+    private var modelDiskRow: some View {
+        let usage = ModelStore.diskUsage(for: qwen3ModelID)
+        HStack {
+            Text("磁盘占用：\(ByteCountFormatter.string(fromByteCount: usage, countStyle: .file))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("打开模型目录") {
+                NSWorkspace.shared.open(ModelStore.baseDir)
+            }
+            Button("删除此模型", role: .destructive) {
+                ModelStore.delete(modelID: qwen3ModelID)
+            }
+            .disabled(usage == 0)
+        }
+    }
+}
+
+// MARK: - 精修
+
+private struct RefineSettingsTab: View {
+    @AppStorage(SettingsKey.apiBaseURL) private var apiBaseURL = "https://api.deepseek.com/v1"
+    @AppStorage(SettingsKey.apiModel) private var apiModel = "deepseek-chat"
+    @AppStorage(SettingsKey.apiKey) private var apiKey = ""
+    @AppStorage(SettingsKey.removeFillers) private var removeFillers = true
+    @AppStorage(SettingsKey.formalize) private var formalize = false
+
+    var body: some View {
+        Form {
+            Section {
                 TextField("API Base URL", text: $apiBaseURL, prompt: Text("https://api.deepseek.com/v1"))
                 TextField("模型", text: $apiModel, prompt: Text("deepseek-chat"))
-                SecureField("API Key（留空则跳过精修，直接使用原始转写）", text: $apiKey)
+                SecureField("API Key", text: $apiKey)
+            } footer: {
+                Text("OpenAI 兼容接口。API Key 留空则跳过精修，直接使用原始转写，不发出任何网络请求。")
+            }
+            Section {
                 Toggle("去除口语填充词（嗯、就是说、那个…）", isOn: $removeFillers)
                 Toggle("口语转书面表达", isOn: $formalize)
             }
+        }
+        .formStyle(.grouped)
+    }
+}
 
-            Section("上下文") {
+// MARK: - 上下文与注入
+
+private struct InputSettingsTab: View {
+    @AppStorage(SettingsKey.contextEnabled) private var contextEnabled = true
+    @AppStorage(SettingsKey.contextMaxChars) private var contextMaxChars = 200
+    @AppStorage(SettingsKey.injectionMethod) private var injectionMethod = InjectionMethod.paste.rawValue
+
+    var body: some View {
+        Form {
+            Section {
                 Toggle("读取光标前文本辅助纠错", isOn: $contextEnabled)
                 if contextEnabled {
                     LabeledContent("读取长度") {
@@ -82,20 +147,30 @@ struct SettingsView: View {
                             .monospacedDigit()
                             .frame(width: 52, alignment: .trailing)
                     }
-                    Text("仅在按下快捷键的瞬间读取一次，并随精修请求发送给你配置的 API。未配置 API 时不会发送。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
+            } footer: {
+                Text("仅在按下快捷键的瞬间读取一次，用于识别偏置与精修纠错；只有配置了 API 时才会随精修请求发送。")
             }
-
-            Section("文本注入") {
+            Section {
                 Picker("注入方式", selection: $injectionMethod) {
                     ForEach(InjectionMethod.allCases) { method in
                         Text(method.displayName).tag(method.rawValue)
                     }
                 }
             }
+        }
+        .formStyle(.grouped)
+    }
+}
 
+// MARK: - 高级（daemon + 权限）
+
+private struct AdvancedSettingsTab: View {
+    @AppStorage(SettingsKey.useDaemon) private var useDaemon = false
+    @ObservedObject private var state = AppState.shared
+
+    var body: some View {
+        Form {
             Section("后台推理服务（实验性）") {
                 Toggle("使用 aime-daemon 承载模型与录音", isOn: $useDaemon)
                 HStack {
@@ -127,30 +202,6 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520)
-        .fixedSize(horizontal: false, vertical: true)
-        .onAppear {
-            NSApp.activate(ignoringOtherApps: true)
-        }
-    }
-
-    /// 当前 Qwen3 档位的磁盘占用与管理入口
-    @ViewBuilder
-    private var modelDiskRow: some View {
-        let usage = ModelStore.diskUsage(for: qwen3ModelID)
-        HStack {
-            Text("磁盘占用：\(ByteCountFormatter.string(fromByteCount: usage, countStyle: .file))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Button("打开模型目录") {
-                NSWorkspace.shared.open(ModelStore.baseDir)
-            }
-            Button("删除此模型", role: .destructive) {
-                ModelStore.delete(modelID: qwen3ModelID)
-            }
-            .disabled(usage == 0)
-        }
     }
 
     @ViewBuilder
