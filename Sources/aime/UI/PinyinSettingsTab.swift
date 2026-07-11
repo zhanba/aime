@@ -25,7 +25,7 @@ struct PinyinSettingsTab: View {
                     }
                 }
             } footer: {
-                Text("整句转换用「精修」页配置的同一个 LLM API。空格上屏首选，回车上屏原始拼音，数字选候选，Esc 取消。双拼方案 M3.5 提供。")
+                Text("整句转换用「精修」页配置的同一个 LLM API。空格上屏首选，回车上屏原始拼音，数字选候选，←→ 选、↑↓ 翻页，Esc 取消。")
             }
 
             Section {
