@@ -31,6 +31,23 @@ bundle: build
 run: bundle
 	open $(APP)
 
+IME_APP := build/aime-ime.app
+
+ime: build
+	rm -rf $(IME_APP)
+	mkdir -p $(IME_APP)/Contents/MacOS
+	cp .build/release/aime-ime $(IME_APP)/Contents/MacOS/aime-ime
+	cp Resources/ime-Info.plist $(IME_APP)/Contents/Info.plist
+	codesign --force --sign "$(SIGN_IDENTITY)" $(IME_APP)
+
+# 安装输入法：拷入 ~/Library/Input Methods 并经 TIS 注册启用，
+# 然后到 系统设置/菜单栏输入法 里选择「aime拼音」
+install-ime: ime bundle
+	pkill -f "Input Methods/aime-ime.app" 2>/dev/null || true
+	rm -rf "$(HOME)/Library/Input Methods/aime-ime.app"
+	cp -R $(IME_APP) "$(HOME)/Library/Input Methods/"
+	./build/aime.app/Contents/MacOS/aime --register-ime
+
 # 重新构建后 launchd 里可能还跑着旧 daemon，用它强制重启
 daemon-restart:
 	launchctl kickstart -k gui/$$(id -u)/com.zhanba.aime.daemon 2>/dev/null || true

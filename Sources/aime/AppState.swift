@@ -1,4 +1,5 @@
 import AimeASR
+import AimePinyin
 import AppKit
 import SwiftUI
 
@@ -60,8 +61,10 @@ final class AppState: ObservableObject {
             Task { @MainActor in
                 self?.reloadHotkeyIfNeeded()
                 self?.reloadBackendIfNeeded()
+                Self.mirrorSharedConfig()
             }
         }
+        Self.mirrorSharedConfig()
 
         daemon.bootstrap()
 
@@ -76,6 +79,17 @@ final class AppState: ObservableObject {
                 self?.accessibilityGranted = ContextCapture.isTrusted
             }
         }
+    }
+
+    /// 把拼音输入法（独立进程）需要的配置镜像到共享 suite
+    private static func mirrorSharedConfig() {
+        let settings = Settings.current()
+        SharedConfig.mirrorFromApp(
+            apiBaseURL: settings.apiBaseURL,
+            apiModel: settings.apiModel,
+            apiKey: settings.apiKey,
+            fuzzyRuleIDs: settings.fuzzyRuleIDs
+        )
     }
 
     private func reloadHotkeyIfNeeded() {

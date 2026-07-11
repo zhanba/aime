@@ -1,4 +1,5 @@
 import AimeASR
+import Carbon
 import Foundation
 import ServiceManagement
 
@@ -6,6 +7,10 @@ import ServiceManagement
 /// 注册 LaunchAgent、ping daemon，打印结果后退出（不进入 GUI）。
 enum DebugCLI {
     static func runIfNeeded() {
+        if CommandLine.arguments.contains("--register-ime") {
+            registerIME()
+            return
+        }
         if CommandLine.arguments.contains("--daemon-prepare") {
             runPrepare()
             return
@@ -34,6 +39,31 @@ enum DebugCLI {
             semaphore.signal()
         }
         semaphore.wait()
+        exit(0)
+    }
+
+    /// `--register-ime`：向 TIS 注册 ~/Library/Input Methods/aime-ime.app 并启用。
+    private static func registerIME() {
+        let url = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Input Methods/aime-ime.app")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            print("register-ime: 未找到 \(url.path)（先 make install-ime）")
+            exit(1)
+        }
+        let registerStatus = TISRegisterInputSource(url as CFURL)
+        print("TISRegisterInputSource: \(registerStatus == noErr ? "ok" : "错误 \(registerStatus)")")
+
+        let filter = [kTISPropertyBundleID as String: "com.zhanba.inputmethod.aime"] as CFDictionary
+        guard let list = TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource],
+              !list.isEmpty
+        else {
+            print("未找到已注册的输入源（可能需要注销重新登录后重试）")
+            exit(1)
+        }
+        for source in list {
+            let enableStatus = TISEnableInputSource(source)
+            print("TISEnableInputSource: \(enableStatus == noErr ? "ok" : "错误 \(enableStatus)")")
+        }
+        print("完成。到 系统设置 → 键盘 → 输入法 或菜单栏输入法图标里选择「aime拼音」。")
         exit(0)
     }
 

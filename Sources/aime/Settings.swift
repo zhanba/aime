@@ -1,10 +1,12 @@
 import AimeASR
+import AimePinyin
 import Foundation
 
 /// UserDefaults 键名。SwiftUI 视图用 @AppStorage 绑定同名键，逻辑层通过 `Settings` 读取。
 enum SettingsKey {
     static let asrBackend = "asrBackend"
     static let useDaemon = "useDaemon"
+    static let fuzzyRules = "fuzzyRules"
     static let qwen3ModelID = "qwen3ModelID"
     static let apiBaseURL = "apiBaseURL"
     static let apiModel = "apiModel"
@@ -67,6 +69,7 @@ enum Qwen3ModelChoice: String, CaseIterable, Identifiable {
 struct Settings {
     var asrBackend: ASRBackendID
     var useDaemon: Bool
+    var fuzzyRuleIDs: Set<String>
     var qwen3ModelID: String
     var apiBaseURL: String
     var apiModel: String
@@ -83,6 +86,7 @@ struct Settings {
         UserDefaults.standard.register(defaults: [
             SettingsKey.asrBackend: ASRBackendID.speechAnalyzer.rawValue,
             SettingsKey.useDaemon: false,
+            SettingsKey.fuzzyRules: Array(FuzzyRule.defaultEnabled),
             SettingsKey.qwen3ModelID: Qwen3ModelChoice.small4bit.rawValue,
             SettingsKey.apiBaseURL: "https://api.deepseek.com/v1",
             SettingsKey.apiModel: "deepseek-chat",
@@ -102,6 +106,7 @@ struct Settings {
         return Settings(
             asrBackend: ASRBackendID(rawValue: d.string(forKey: SettingsKey.asrBackend) ?? "") ?? .speechAnalyzer,
             useDaemon: d.bool(forKey: SettingsKey.useDaemon),
+            fuzzyRuleIDs: Set((d.array(forKey: SettingsKey.fuzzyRules) as? [String]) ?? Array(FuzzyRule.defaultEnabled)),
             qwen3ModelID: d.string(forKey: SettingsKey.qwen3ModelID) ?? Qwen3ModelChoice.small4bit.rawValue,
             apiBaseURL: d.string(forKey: SettingsKey.apiBaseURL) ?? "https://api.deepseek.com/v1",
             apiModel: d.string(forKey: SettingsKey.apiModel) ?? "deepseek-chat",

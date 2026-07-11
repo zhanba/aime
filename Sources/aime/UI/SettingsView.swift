@@ -7,6 +7,8 @@ struct SettingsView: View {
         TabView {
             VoiceSettingsTab()
                 .tabItem { Label("语音", systemImage: "mic") }
+            PinyinSettingsTab()
+                .tabItem { Label("拼音", systemImage: "keyboard") }
             RefineSettingsTab()
                 .tabItem { Label("精修", systemImage: "sparkles") }
             InputSettingsTab()

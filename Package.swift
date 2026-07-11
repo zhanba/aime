@@ -25,8 +25,43 @@ let package = Package(
         ),
         .executableTarget(
             name: "aime",
-            dependencies: ["AimeASR"],
+            dependencies: ["AimeASR", "AimePinyin"],
             path: "Sources/aime",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
+        // 拼音引擎：音节表 / 切分 lattice / 模糊音 / 键盘错误模型 / LLM 整句转换 / 用户词库。
+        // 无重依赖（不含 MLX），IME 进程保持轻量。
+        .target(
+            name: "AimePinyin",
+            path: "Sources/AimePinyin",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
+        .testTarget(
+            name: "AimePinyinTests",
+            dependencies: ["AimePinyin"],
+            path: "Tests/AimePinyinTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
+        // IMKit 输入法（thin：按键状态机 + 组合区 + 候选窗，转换走 AimePinyin）
+        .executableTarget(
+            name: "aime-ime",
+            dependencies: ["AimePinyin"],
+            path: "Sources/aime-ime",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
+        // 拼音评测 CLI：swift run aime-pinyin <input> / --suite testdata/pinyin_testset.tsv
+        .executableTarget(
+            name: "aime-pinyin",
+            dependencies: ["AimePinyin"],
+            path: "Sources/aime-pinyin",
             swiftSettings: [
                 .swiftLanguageMode(.v5)
             ]
