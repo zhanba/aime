@@ -15,6 +15,9 @@ class AimeInputController: IMKInputController {
     private var pendingCommit = false
     private var debounceTask: Task<Void, Never>?
     private var currentCandidates: [String] = []
+    /// 方向键高亮的候选序号（自行跟踪，Enter 按它提交，不依赖面板回调）
+    private var selectedCandidateIndex = 0
+    private var candidatesNavigated = false
 
     private static let punctuationMap: [String: String] = [
         ",": "，", ".": "。", "?": "？", "!": "！", ":": "：", ";": "；",
@@ -73,11 +76,29 @@ class AimeInputController: IMKInputController {
             buffer = String(buffer.dropLast())
             afterBufferChange()
             return true
-        case 36: // Enter：上屏原始拼音
-            commit(buffer)
+        case 36: // Enter：方向键选过候选则提交高亮项，否则上屏原始拼音
+            if candidatesNavigated, selectedCandidateIndex < currentCandidates.count {
+                commit(currentCandidates[selectedCandidateIndex])
+            } else {
+                commit(buffer)
+            }
             return true
-        case 49: // Space：上屏首选
-            commitBestOrWait()
+        case 49: // Space：方向键选过候选则提交高亮项，否则上屏首选
+            if candidatesNavigated, selectedCandidateIndex < currentCandidates.count {
+                commit(currentCandidates[selectedCandidateIndex])
+            } else {
+                commitBestOrWait()
+            }
+            return true
+        case 125, 126: // ↓/↑：候选高亮移动（转发给面板同步视觉，自己记序号）
+            guard isCandidatesVisible, !currentCandidates.isEmpty else { return true }
+            if event.keyCode == 125 {
+                selectedCandidateIndex = min(selectedCandidateIndex + 1, currentCandidates.count - 1)
+            } else {
+                selectedCandidateIndex = max(selectedCandidateIndex - 1, 0)
+            }
+            candidatesNavigated = true
+            IMEGlobals.candidates?.interpretKeyEvents([event])
             return true
         case 48: // Tab：暂不做段间跳转（M4），吞掉避免焦点跳走
             return true
@@ -86,14 +107,15 @@ class AimeInputController: IMKInputController {
         }
 
         if characters.count == 1, let char = characters.first {
+            // 数字优先选候选（候选面板可见时）；否则作为混输进 buffer
+            if let digit = char.wholeNumberValue, (1 ... 9).contains(digit),
+               isCandidatesVisible, digit <= currentCandidates.count {
+                commit(currentCandidates[digit - 1])
+                return true
+            }
             if char.isLowercaseLatin || char.isUppercaseLatin || char.isNumber || char == "'" {
                 buffer.append(char)
                 afterBufferChange()
-                return true
-            }
-            if let digit = char.wholeNumberValue, (1 ... 9).contains(digit),
-               digit <= currentCandidates.count, isCandidatesVisible {
-                commit(currentCandidates[digit - 1])
                 return true
             }
             if let mapped = Self.punctuationMap[characters] {
@@ -112,6 +134,11 @@ class AimeInputController: IMKInputController {
 
     private func afterBufferChange() {
         pendingCommit = false
+        // buffer 变了 → 候选已过期，收起面板等新转换
+        currentCandidates = []
+        selectedCandidateIndex = 0
+        candidatesNavigated = false
+        IMEGlobals.candidates?.hide()
         if buffer.isEmpty {
             clearComposition()
             return
@@ -131,6 +158,8 @@ class AimeInputController: IMKInputController {
         pendingCommit = false
         debounceTask?.cancel()
         currentCandidates = []
+        selectedCandidateIndex = 0
+        candidatesNavigated = false
         IMEGlobals.candidates?.hide()
         client()?.setMarkedText(
             "", selectionRange: NSRange(location: 0, length: 0), replacementRange: Self.replacementRange
@@ -241,6 +270,8 @@ class AimeInputController: IMKInputController {
         }
         list.append(buffer)
         currentCandidates = list
+        selectedCandidateIndex = 0
+        candidatesNavigated = false
         IMEGlobals.candidates?.update()
         IMEGlobals.candidates?.show()
     }
