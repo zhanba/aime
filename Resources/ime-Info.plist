@@ -24,8 +24,9 @@
 	<string>26.0</string>
 	<key>LSBackgroundOnly</key>
 	<true/>
+	<!-- 必须为 <bundle-id>_Connection：系统按此约定注册 mach 端点，不匹配则事件无法送达 -->
 	<key>InputMethodConnectionName</key>
-	<string>aime_ime_connection</string>
+	<string>com.zhanba.inputmethod.aime_Connection</string>
 	<key>InputMethodServerControllerClass</key>
 	<string>AimeInputController</string>
 	<key>tsInputMethodCharacterRepertoireKey</key>

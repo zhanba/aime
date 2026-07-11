@@ -9,7 +9,9 @@ enum IMEGlobals {
 }
 
 let app = NSApplication.shared
-let connectionName = (Bundle.main.infoDictionary?["InputMethodConnectionName"] as? String) ?? "aime_ime_connection"
+let connectionName = (Bundle.main.infoDictionary?["InputMethodConnectionName"] as? String)
+    ?? "com.zhanba.inputmethod.aime_Connection"
+NSLog("aime-ime 启动，连接名=\(connectionName)")
 IMEGlobals.server = IMKServer(name: connectionName, bundleIdentifier: Bundle.main.bundleIdentifier)
 IMEGlobals.candidates = IMKCandidates(server: IMEGlobals.server, panelType: kIMKSingleColumnScrollingCandidatePanel)
 app.run()

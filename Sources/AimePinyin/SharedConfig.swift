@@ -9,12 +9,14 @@ public enum SharedConfig {
         UserDefaults(suiteName: suiteName) ?? .standard
     }
 
+    /// 只在值变化时写入：set 会触发 didChangeNotification，无脑写会造成通知风暴
     public static func mirrorFromApp(apiBaseURL: String, apiModel: String, apiKey: String, fuzzyRuleIDs: Set<String>) {
         let d = defaults
-        d.set(apiBaseURL, forKey: "apiBaseURL")
-        d.set(apiModel, forKey: "apiModel")
-        d.set(apiKey, forKey: "apiKey")
-        d.set(Array(fuzzyRuleIDs), forKey: "fuzzyRuleIDs")
+        if d.string(forKey: "apiBaseURL") != apiBaseURL { d.set(apiBaseURL, forKey: "apiBaseURL") }
+        if d.string(forKey: "apiModel") != apiModel { d.set(apiModel, forKey: "apiModel") }
+        if d.string(forKey: "apiKey") != apiKey { d.set(apiKey, forKey: "apiKey") }
+        let stored = Set((d.array(forKey: "fuzzyRuleIDs") as? [String]) ?? [])
+        if stored != fuzzyRuleIDs { d.set(Array(fuzzyRuleIDs), forKey: "fuzzyRuleIDs") }
     }
 
     public static func loadLLMConfig() -> PinyinLLMConfig {

@@ -24,6 +24,7 @@ class AimeInputController: IMKInputController {
     // MARK: - IMK 生命周期
 
     override func activateServer(_ sender: Any!) {
+        NSLog("aime-ime activateServer client=%@", String(describing: type(of: sender ?? "nil")))
         clearComposition()
     }
 

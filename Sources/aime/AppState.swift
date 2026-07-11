@@ -55,8 +55,10 @@ final class AppState: ObservableObject {
         hotkey.onEscape = { [weak self] in Task { @MainActor in self?.cancelSession() } }
         reloadHotkeyIfNeeded()
 
+        // 只观察 standard defaults：镜像写共享 suite 也会发同名通知，
+        // object: nil 会形成 写→通知→再写 的死循环（主线程 100%）
         NotificationCenter.default.addObserver(
-            forName: UserDefaults.didChangeNotification, object: nil, queue: .main
+            forName: UserDefaults.didChangeNotification, object: UserDefaults.standard, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.reloadHotkeyIfNeeded()
