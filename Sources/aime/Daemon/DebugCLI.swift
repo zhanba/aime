@@ -15,10 +15,16 @@ enum DebugCLI {
             runPrepare()
             return
         }
-        guard CommandLine.arguments.contains("--daemon-status") else { return }
+        let reregister = CommandLine.arguments.contains("--daemon-reregister")
+        guard reregister || CommandLine.arguments.contains("--daemon-status") else { return }
 
         let service = SMAppService.agent(plistName: "com.zhanba.aime.daemon.plist")
-        if service.status != .enabled {
+        if reregister {
+            // 注册刷新到当前 app 位置（app 挪位置后 BTM 记录指旧路径时用）
+            try? service.unregister()
+            Thread.sleep(forTimeInterval: 1)
+        }
+        if service.status != .enabled || reregister {
             do {
                 try service.register()
                 print("register: ok")

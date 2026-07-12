@@ -23,6 +23,26 @@ final class DaemonManager: ObservableObject {
 
     func bootstrap() {
         register()
+        // 自愈：BTM 记录 enabled 但 daemon 拉不起来（app 路径变更后注册指向旧位置，
+        // spawn EX_CONFIG），强制从当前位置重注册。ping 会触发 launchd 按需拉起，
+        // 两次都不通才动注册（避免误伤慢启动）。
+        Task {
+            guard service.status == .enabled, await client.ping() == nil else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard await client.ping() == nil else { return }
+            forceReregister()
+        }
+    }
+
+    /// unregister + register：把 LaunchAgent 注册刷新到当前 app 位置。
+    func forceReregister() {
+        try? service.unregister()
+        do {
+            try service.register()
+        } catch {
+            statusText = "重注册失败：\(error.localizedDescription)"
+        }
+        refreshStatus()
     }
 
     func register() {
