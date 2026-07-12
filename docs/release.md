@@ -60,11 +60,17 @@ gh release create v0.2.0 build/dist/Aime-0.2.0.dmg --title "Aime 0.2.0" --notes 
 - daemon XPC 以 audit token + `SecRequirement`（Apple 锚 + 同 Team ID）校验连接方，
   ad-hoc 构建（无 Team ID）降级为同 UID 放行。
 
+## Sparkle 自动更新
+
+- feed：`SUFeedURL` 固定指向 `releases/latest/download/appcast.xml`，每个 Release 都要把
+  release.sh 产出的 `appcast.xml` 与 DMG 一起上传（`gh release create v<版本> <dmg> <appcast>`）；
+- **EdDSA 私钥在登录钥匙串**（`generate_keys` 生成，条目名含 "Private key for signing Sparkle updates"）。
+  **务必备份**（`generate_keys -x 文件` 导出）：丢失后无法向老用户推送可验签的更新；
+- 换机发版：先 `generate_keys -f 文件` 导入私钥；
+- appcast 在 staple 之后生成（staple 改 DMG 内容，签名按最终文件算），顺序不能颠倒。
+
 ## 已知事项与欠账
 
-- **Sparkle 自动更新未接入**（ROADMAP 既定方向）。接入前需决策：appcast.xml 托管位置
-  （GitHub Releases/Pages 均可）；需生成 EdDSA 密钥对、在 Info.plist 写 `SUFeedURL`/`SUPublicEDKey`、
-  release.sh 追加 `generate_appcast` 步骤。首个公开版本若不带 Sparkle，则老用户需手动升级一次。
 - **内嵌 IME 的公证票据**：只对外层 aime.app staple；用户点「安装输入法」拷出的 aime-ime.app
   依赖首次启用时在线查询票据（公证已覆盖其 hash）。完全离线首装场景不可用——可接受，
   若要消除需两段式公证（先单独公证 ime 再组装）。
