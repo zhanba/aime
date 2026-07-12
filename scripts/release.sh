@@ -78,6 +78,15 @@ else
     echo "==> [5/6][6/6] 跳过 DMG 公证与 Gatekeeper 终验（--skip-notarize）"
 fi
 
+# appcast 必须在 staple 之后生成（staple 会改 DMG 内容，EdDSA 签名按最终文件算）。
+# 私钥在登录钥匙串（generate_keys 生成）；appcast.xml 与 DMG 一起挂上 GitHub Release，
+# SUFeedURL 固定指向 releases/latest/download/appcast.xml。
+echo "==> 生成 Sparkle appcast"
+.build/artifacts/sparkle/Sparkle/bin/generate_appcast \
+    --download-url-prefix "https://github.com/zhanba/aime/releases/download/v${VERSION}/" \
+    -o "${DIST}/appcast.xml" "${DIST}"
+
 echo
-echo "完成：${DMG}（v${VERSION} build ${BUILD_NUM}）"
-echo "建议：git tag v${VERSION} && git push --tags，DMG 挂到 GitHub Release。"
+echo "完成：${DMG} + ${DIST}/appcast.xml（v${VERSION} build ${BUILD_NUM}）"
+echo "发布：git tag v${VERSION} && git push --tags"
+echo "      gh release create v${VERSION} ${DMG} ${DIST}/appcast.xml --title \"Aime ${VERSION}\""

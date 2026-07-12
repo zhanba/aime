@@ -14,6 +14,8 @@ BINARY := .build/release/aime
 # 并放到可执行文件旁（MLX 运行时在可执行文件目录查找 mlx.metallib）
 METALLIB_SCRIPT := .build/checkouts/qwen3-asr-swift/scripts/build_mlx_metallib.sh
 METALLIB := .build/release/mlx.metallib
+SPARKLE_FW := .build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework
+SPARKLE_IN_APP := $(APP)/Contents/Frameworks/Sparkle.framework
 # 发布时由 scripts/release.sh 传入：VERSION=0.2.0 BUILD_NUM=123（默认保留 plist 里的值）
 VERSION ?=
 BUILD_NUM ?=
@@ -43,7 +45,7 @@ ime: build
 # 应用内「安装输入法」从这里拷到 ~/Library/Input Methods——DMG 拖装即完整分发
 bundle: build ime
 	rm -rf $(APP)
-	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources $(APP)/Contents/Helpers $(APP)/Contents/Library/LaunchAgents
+	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources $(APP)/Contents/Helpers $(APP)/Contents/Frameworks $(APP)/Contents/Library/LaunchAgents
 	cp $(BINARY) $(APP)/Contents/MacOS/aime
 	cp .build/release/aime-daemon $(APP)/Contents/MacOS/aime-daemon
 	cp Resources/com.zhanba.aime.daemon.plist $(APP)/Contents/Library/LaunchAgents/
@@ -54,6 +56,13 @@ bundle: build ime
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
 	$(call stamp_version,$(APP)/Contents/Info.plist)
 	cp -R $(IME_APP) $(APP)/Contents/Helpers/
+	# Sparkle：非 Xcode 构建需手动嵌入并逐个签名内嵌组件（官方 Sandboxing/非 Xcode 分发文档的顺序）
+	cp -R $(SPARKLE_FW) $(APP)/Contents/Frameworks/
+	$(CODESIGN) $(SPARKLE_IN_APP)/Versions/B/XPCServices/Installer.xpc
+	codesign --force --options runtime $(CODESIGN_TS) --preserve-metadata=entitlements --sign "$(SIGN_IDENTITY)" $(SPARKLE_IN_APP)/Versions/B/XPCServices/Downloader.xpc
+	$(CODESIGN) $(SPARKLE_IN_APP)/Versions/B/Autoupdate
+	$(CODESIGN) $(SPARKLE_IN_APP)/Versions/B/Updater.app
+	$(CODESIGN) $(SPARKLE_IN_APP)
 	$(CODESIGN) --entitlements $(ENT)/daemon.entitlements $(APP)/Contents/MacOS/aime-daemon
 	$(CODESIGN) --entitlements $(ENT)/aime.entitlements $(APP)
 

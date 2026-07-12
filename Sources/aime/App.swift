@@ -51,6 +51,10 @@ struct MenuContent: View {
         }
         .keyboardShortcut(",")
 
+        Button("检查更新…") {
+            UpdaterController.shared.checkForUpdates()
+        }
+
         Divider()
 
         Button("退出 Aime") {
@@ -77,5 +81,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         AppState.shared.bootstrap()
+        _ = UpdaterController.shared // 启动 Sparkle 后台定时检查
     }
 }

@@ -28,5 +28,11 @@
 	<string>Aime 需要使用麦克风进行语音输入。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Aime 在本地转写你的语音，音频不会离开这台设备。</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/zhanba/aime/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>pye/wJe/c+rXSU4jReomXfXsu1piszlsXxwlUHajuXk=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 </dict>
 </plist>

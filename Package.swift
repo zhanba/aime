@@ -8,7 +8,9 @@ let package = Package(
     ],
     dependencies: [
         // 锁精确版本：0.0.x API 不稳定，升级需过一遍 Qwen3ASRBackend.swift
-        .package(url: "https://github.com/ivan-digital/qwen3-asr-swift", exact: "0.0.21")
+        .package(url: "https://github.com/ivan-digital/qwen3-asr-swift", exact: "0.0.21"),
+        // 自动更新（直接分发）：feed 挂 GitHub Releases，EdDSA 签名
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
     targets: [
         // 轻量 XPC 层：协议 + 客户端 + 数据类型。IME 进程只依赖它（不拖 MLX）。
@@ -34,10 +36,20 @@ let package = Package(
         ),
         .executableTarget(
             name: "aime",
-            dependencies: ["AimeASR", "AimePinyin"],
+            dependencies: [
+                "AimeASR", "AimePinyin",
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             path: "Sources/aime",
             swiftSettings: [
                 .swiftLanguageMode(.v5)
+            ],
+            linkerSettings: [
+                // 打包后 Sparkle.framework 在 Contents/Frameworks（开发运行走 SwiftPM artifact 的绝对 rpath）
+                .unsafeFlags([
+                    "-Xlinker", "-rpath",
+                    "-Xlinker", "@executable_path/../Frameworks",
+                ])
             ]
         ),
         // 拼音引擎：音节表 / 切分 lattice / 模糊音 / 键盘错误模型 / LLM 整句转换 / 用户词库。
