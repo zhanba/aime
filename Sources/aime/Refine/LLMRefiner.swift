@@ -57,12 +57,12 @@ struct LLMRefiner {
         lines.append("你的任务：")
         lines.append("1. 修正明显的识别错误（同音字、近音词、中英混说时被误识别的英文单词或术语）")
         lines.append("2. 补全并修正标点符号")
-        if settings.removeFillers {
+        if settings.refineStyle.removesFillers {
             lines.append("3. 删除口语填充词（嗯、呃、啊、就是说、那个、然后那种口头禅）")
         } else {
             lines.append("3. 保留说话人的口语风格，不删减语气词")
         }
-        if settings.formalize {
+        if settings.refineStyle.formalizes {
             lines.append("4. 在完全保持原意的前提下，把口语表达整理为通顺的书面表达")
         } else {
             lines.append("4. 除上述修正外不要改写句子结构")

@@ -11,9 +11,9 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>aime</string>
+	<string>Aime</string>
 	<key>CFBundleDisplayName</key>
-	<string>aime</string>
+	<string>Aime</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -25,8 +25,8 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>aime 需要使用麦克风进行语音输入。</string>
+	<string>Aime 需要使用麦克风进行语音输入。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>aime 在本地转写你的语音，音频不会离开这台设备。</string>
+	<string>Aime 在本地转写你的语音，音频不会离开这台设备。</string>
 </dict>
 </plist>

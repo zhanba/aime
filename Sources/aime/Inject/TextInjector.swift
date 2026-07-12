@@ -2,11 +2,16 @@ import AppKit
 import Carbon.HIToolbox
 
 /// 把最终文本注入前台应用：粘贴（保存并恢复剪贴板）或模拟键入 Unicode。
+/// 方式按文本长度自动选，不暴露给用户：短文本模拟键入（不动剪贴板），
+/// 长文本粘贴（模拟键入在部分应用丢字，长度越长风险越大）。
 enum TextInjector {
-    static func inject(_ text: String, method: InjectionMethod) {
-        switch method {
-        case .paste: pasteInject(text)
-        case .type: typeInject(text)
+    private static let typeInjectMaxChars = 40
+
+    static func inject(_ text: String) {
+        if text.count <= typeInjectMaxChars {
+            typeInject(text)
+        } else {
+            pasteInject(text)
         }
     }
 

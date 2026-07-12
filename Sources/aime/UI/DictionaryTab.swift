@@ -22,7 +22,7 @@ struct DictionaryTab: View {
 
             Section("已学到 \(entries.count) 个词") {
                 if entries.isEmpty {
-                    Text("还没有词条——用 aime拼音 打字或语音输入后会自动积累")
+                    Text("还没有词条——用 Aime拼音 打字或语音输入后会自动积累")
                         .foregroundStyle(.secondary)
                 } else {
                     ScrollView {

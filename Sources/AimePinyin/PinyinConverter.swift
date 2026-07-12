@@ -176,7 +176,7 @@ public enum PinyinError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .notConfigured: return "未配置 LLM API（在 aime 设置 → 精修 里填写）"
+        case .notConfigured: return "未配置 LLM API（在 Aime 设置 → 精修 里填写）"
         case .httpError(let code): return "LLM 请求失败（HTTP \(code)）"
         case .emptyResponse: return "LLM 返回了空结果"
         }

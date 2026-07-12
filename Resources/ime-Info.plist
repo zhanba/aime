@@ -6,14 +6,17 @@
 	<string>zh_CN</string>
 	<key>CFBundleExecutable</key>
 	<string>aime-ime</string>
+	<!-- 有 icns 时 TIS 才会给输入源建 IconRef；光标处切换胶囊等系统 UI 走这条通路取图 -->
+	<key>CFBundleIconFile</key>
+	<string>aime-ime.icns</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.zhanba.inputmethod.aime</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>aime拼音</string>
+	<string>Aime拼音</string>
 	<key>CFBundleDisplayName</key>
-	<string>aime拼音</string>
+	<string>Aime拼音</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -38,5 +41,9 @@
 	<string>zh-Hans</string>
 	<key>InputMethodType</key>
 	<string>KeyboardInputMethod</string>
+	<!-- 纯黑矢量 PDF（字形镂空，同鼠须管 rime.pdf 形态）：
+	     macOS 12.4+ 只对纯黑白图标做菜单栏明暗/选中自动反色 -->
+	<key>tsInputMethodIconFileKey</key>
+	<string>aime-menu-icon.pdf</string>
 </dict>
 </plist>

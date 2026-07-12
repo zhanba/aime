@@ -35,9 +35,10 @@ IME_APP := build/aime-ime.app
 
 ime: build
 	rm -rf $(IME_APP)
-	mkdir -p $(IME_APP)/Contents/MacOS
+	mkdir -p $(IME_APP)/Contents/MacOS $(IME_APP)/Contents/Resources
 	cp .build/release/aime-ime $(IME_APP)/Contents/MacOS/aime-ime
 	cp Resources/ime-Info.plist $(IME_APP)/Contents/Info.plist
+	cp Resources/aime-menu-icon.pdf Resources/aime-ime.icns $(IME_APP)/Contents/Resources/
 	codesign --force --sign "$(SIGN_IDENTITY)" $(IME_APP)
 
 # 安装输入法：拷入 ~/Library/Input Methods 并经 TIS 注册启用，

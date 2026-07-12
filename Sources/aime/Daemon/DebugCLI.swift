@@ -63,7 +63,7 @@ enum DebugCLI {
             let enableStatus = TISEnableInputSource(source)
             print("TISEnableInputSource: \(enableStatus == noErr ? "ok" : "错误 \(enableStatus)")")
         }
-        print("完成。到 系统设置 → 键盘 → 输入法 或菜单栏输入法图标里选择「aime拼音」。")
+        print("完成。到 系统设置 → 键盘 → 输入法 或菜单栏输入法图标里选择「Aime拼音」。")
         exit(0)
     }
 

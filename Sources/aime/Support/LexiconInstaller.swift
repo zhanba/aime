@@ -5,6 +5,8 @@ import Foundation
 /// GPL-3 数据：首次使用时由用户下载，编译产物独立存放，不随 app 分发。
 @MainActor
 final class LexiconInstaller: ObservableObject {
+    static let shared = LexiconInstaller()
+
     enum Phase: Equatable {
         case idle
         case downloading(String) // 进度文案
@@ -33,6 +35,12 @@ final class LexiconInstaller: ObservableObject {
         }
         let size = (try? Lexicon.defaultURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         installedInfo = "已安装 \(lexicon.entryCount) 词条（\(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))）"
+    }
+
+    /// 首启自动补齐：未安装才下载，失败不重试（设置页可手动重试）
+    func installIfNeeded() {
+        guard installedInfo == nil else { return }
+        install()
     }
 
     func install() {

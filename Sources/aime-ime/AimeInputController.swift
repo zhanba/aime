@@ -7,6 +7,7 @@ import InputMethodKit
 private struct Candidate {
     enum Kind {
         case llmBest, llmAlternative, localSentence, word, raw
+        case translation, translationSource
     }
 
     var text: String
@@ -14,12 +15,14 @@ private struct Candidate {
     var typedLength: Int?
 
     var tag: String {
-        switch self {
-        case let c where c.kind == .llmBest: return "AI"
-        case let c where c.kind == .llmAlternative: return "备"
-        case let c where c.kind == .localSentence: return "句"
-        case let c where c.kind == .raw: return "原"
-        default: return ""
+        switch kind {
+        case .llmBest: return "AI"
+        case .llmAlternative: return "备"
+        case .localSentence: return "句"
+        case .raw: return "原"
+        case .translation: return "译"
+        case .translationSource: return "原"
+        case .word: return ""
         }
     }
 }
@@ -37,7 +40,8 @@ private struct ConfirmedSegment {
 /// - 语音（按住右 Option）经 daemon XPC 流式进入组合区；
 /// - 消歧自动分流：ASR 结果与当前拼音音节匹配 → 替换预览；不匹配 → 追加语音段；
 /// - Shift+Space 回改：刚上屏的内容重回 composition；
-/// - 退格到语音段：纯中文反推拼音重解释（跨模态纠错 v1）。
+/// - 退格到语音段：纯中文反推拼音重解释（跨模态纠错 v1）；
+/// - Tab 翻译（v1）：整个组合内容中→英，译文进候选栏，可逆（Tab/Esc 退回中文态）。
 @objc(AimeInputController)
 class AimeInputController: IMKInputController {
     private var confirmedStack: [ConfirmedSegment] = []
@@ -59,6 +63,15 @@ class AimeInputController: IMKInputController {
     private var voiceLiveText = ""
     private static let daemonClient = DaemonClient()
     private static var daemonAvailable = false
+
+    // 翻译态（Tab）：翻译是组合区的一次可逆预览变换，源中文始终保留
+    private enum TranslationPhase { case none, pending, shown }
+    private var translationPhase: TranslationPhase = .none
+    private var translationSource = ""
+    private var translationResult: TranslationResult?
+    private var translationTask: Task<Void, Never>?
+    /// 候选条角落的临时提示（翻译中/失败/不可用），下一次输入清除
+    private var barHint = ""
 
     // 回改（Shift+Space）
     private struct CommitRecord {
@@ -159,6 +172,11 @@ class AimeInputController: IMKInputController {
             return false
         }
 
+        // 翻译态优先分发（Tab/Esc/Enter/标点在翻译态语义不同；nil = 交回正常处理）
+        if translationPhase != .none, let handled = handleTranslationKey(event) {
+            return handled
+        }
+
         switch event.keyCode {
         case 53: // Esc：整体取消
             resetAll()
@@ -176,13 +194,16 @@ class AimeInputController: IMKInputController {
                 selectCandidate(at: page * Self.pageSize + highlighted)
             }
             return true
+        case 48: // Tab：翻译整个组合内容为英文
+            startTranslation()
+            return true
         case 123:
             moveHighlight(-1)
             return true
         case 124:
             moveHighlight(1)
             return true
-        case 125, 48:
+        case 125:
             turnPage(1)
             return true
         case 126:
@@ -245,6 +266,7 @@ class AimeInputController: IMKInputController {
             voiceHandledLast = false
             return
         }
+        clearTranslation() // 翻译态中按下语音键：回到中文组合态再录音
         voiceRecording = true
         voiceHandledLast = true
         voiceLiveText = ""
@@ -336,6 +358,121 @@ class AimeInputController: IMKInputController {
         updateMarkedText()
     }
 
+    // MARK: - 翻译（v1，Tab 触发）
+
+    /// 翻译态按键分发。返回 true=已处理；nil=交回正常路径
+    /// （Space/方向/数字直接作用于译文候选，字母先退出翻译态再照常追加）。
+    private func handleTranslationKey(_ event: NSEvent) -> Bool? {
+        switch event.keyCode {
+        case 48, 53, 51: // Tab/Esc/Backspace：退回中文组合态，不丢任何东西
+            exitTranslation()
+            return true
+        case 36: // Enter：shown 提交高亮译文；pending 取消翻译并按原语义提交
+            if translationPhase == .shown, !candidates.isEmpty {
+                selectCandidate(at: page * Self.pageSize + highlighted)
+            } else {
+                clearTranslation()
+                commitFinal(confirmedText + rawBuffer)
+            }
+            return true
+        case 49, 123, 124, 125, 126: // Space/方向/翻页：作用于当前候选（pending 时先取消翻译）
+            if translationPhase == .pending {
+                clearTranslation()
+                updateMarkedText() // 清掉组合区尾部的 "⇢ ⋯"
+            }
+            return nil
+        default:
+            break
+        }
+        let characters = event.characters ?? ""
+        if translationPhase == .shown, characters.count == 1, let char = characters.first {
+            if let digit = char.wholeNumberValue, (1 ... 9).contains(digit) {
+                return nil // 数字选译文候选，正常路径处理
+            }
+            if let mapped = Self.punctuationMap[characters] {
+                // 标点 = 提交高亮候选 + 标点；提交英文时用 ASCII 标点，提交[原]中文时用全角
+                let index = page * Self.pageSize + highlighted
+                let candidate = index < candidates.count ? candidates[index] : nil
+                if candidate?.kind == .translationSource {
+                    commitFinal((candidate?.text ?? translationSource) + mapped)
+                } else {
+                    let text = candidate?.text ?? translationResult?.best ?? ""
+                    commitFinal(text + characters, recordLearning: false)
+                }
+                return true
+            }
+        }
+        // 其余按键（字母等）：退出翻译态，交回正常处理（字母会照常进 rawBuffer）
+        clearTranslation()
+        return nil
+    }
+
+    private func startTranslation() {
+        guard translationPhase == .none, !voiceRecording else { return }
+        let source = confirmedText + currentPreview
+        guard !source.isEmpty else { return }
+        // 翻译必须走 LLM，隐私门控与整句转换一致
+        if SharedConfig.pureLocalMode {
+            showHint("翻译不可用：纯本地模式")
+            return
+        }
+        if clientBlocked {
+            showHint("翻译不可用：该应用已屏蔽 LLM")
+            return
+        }
+        let config = SharedConfig.loadLLMConfig()
+        guard !config.apiKey.isEmpty else {
+            showHint("翻译需配置 LLM API（设置 → 精修）")
+            return
+        }
+        translationPhase = .pending
+        translationSource = source
+        barHint = "翻译中…"
+        showBar()
+        updateMarkedText()
+        let context = contextBeforeCursor()
+        translationTask = Task { @MainActor [weak self] in
+            do {
+                let result = try await Translator().translate(source, context: context, config: config)
+                guard let self, self.translationPhase == .pending, self.translationSource == source else { return }
+                self.translationResult = result
+                self.translationPhase = .shown
+                self.barHint = ""
+                self.rebuildCandidates()
+                self.updateMarkedText()
+            } catch {
+                guard let self, !Task.isCancelled,
+                      self.translationPhase == .pending, self.translationSource == source else { return }
+                self.clearTranslation()
+                self.barHint = "翻译失败，Tab 重试"
+                self.rebuildCandidates()
+                self.updateMarkedText()
+            }
+        }
+    }
+
+    /// 清除翻译状态（不刷新 UI，调用方决定后续渲染）。
+    private func clearTranslation() {
+        translationTask?.cancel()
+        translationTask = nil
+        translationPhase = .none
+        translationSource = ""
+        translationResult = nil
+        barHint = ""
+    }
+
+    /// 退出翻译态并恢复中文组合的候选与组合区。
+    private func exitTranslation() {
+        clearTranslation()
+        rebuildCandidates()
+        updateMarkedText()
+    }
+
+    private func showHint(_ text: String) {
+        barHint = text
+        showBar()
+    }
+
     // MARK: - 状态
 
     private var isComposing: Bool {
@@ -364,6 +501,7 @@ class AimeInputController: IMKInputController {
     private func resetAll() {
         confirmedStack = []
         clearActiveBuffer()
+        clearTranslation()
         candidates = []
         highlighted = 0
         page = 0
@@ -375,7 +513,8 @@ class AimeInputController: IMKInputController {
         )
     }
 
-    private func commitFinal(_ text: String) {
+    /// recordLearning=false 用于提交译文：整句英文抽词会污染用户词库（满是 the/have 类常用词）
+    private func commitFinal(_ text: String, recordLearning: Bool = true) {
         if !text.isEmpty, let client = client() {
             let stackSnapshot = confirmedStack
             let bufferSnapshot = rawBuffer
@@ -385,7 +524,7 @@ class AimeInputController: IMKInputController {
                 text: text, date: Date(), cursorAfter: cursor,
                 stack: stackSnapshot, rawBuffer: bufferSnapshot
             )
-            learn(text)
+            if recordLearning { learn(text) }
         }
         resetAll()
     }
@@ -421,6 +560,7 @@ class AimeInputController: IMKInputController {
     // MARK: - 刷新与候选
 
     private func refresh() {
+        clearTranslation()
         guard !rawBuffer.isEmpty else {
             updateMarkedText()
             rebuildCandidates()
@@ -437,6 +577,19 @@ class AimeInputController: IMKInputController {
     }
 
     private func rebuildCandidates() {
+        // 翻译态：候选 = 首选译文 + 备选译法 + [原]中文（选原文 = 反悔通道）
+        if translationPhase == .shown, let result = translationResult {
+            var list = [Candidate(text: result.best, kind: .translation, typedLength: nil)]
+            if let alternative = result.alternative, alternative != result.best {
+                list.append(Candidate(text: alternative, kind: .translation, typedLength: nil))
+            }
+            list.append(Candidate(text: translationSource, kind: .translationSource, typedLength: nil))
+            candidates = list
+            highlighted = 0
+            page = 0
+            showBar()
+            return
+        }
         var list: [Candidate] = []
         if !rawBuffer.isEmpty {
             if llmFresh, let conversion = llmConversion {
@@ -469,7 +622,7 @@ class AimeInputController: IMKInputController {
     }
 
     private func showBar() {
-        guard isComposing, !candidates.isEmpty else {
+        guard isComposing, !candidates.isEmpty || !barHint.isEmpty else {
             Self.bar.hide()
             return
         }
@@ -482,7 +635,7 @@ class AimeInputController: IMKInputController {
         Self.bar.show(
             items: items,
             highlighted: highlighted,
-            pageInfo: pageCount > 1 ? "\(page + 1)/\(pageCount)" : "",
+            pageInfo: barHint.isEmpty ? (pageCount > 1 ? "\(page + 1)/\(pageCount)" : "") : barHint,
             near: caretRect()
         )
     }
@@ -499,6 +652,7 @@ class AimeInputController: IMKInputController {
         guard pageItemCount > 0 else { return }
         highlighted = (highlighted + delta + pageItemCount) % pageItemCount
         showBar()
+        if translationPhase == .shown { updateMarkedText() } // 翻译态组合区跟随高亮候选
     }
 
     private func turnPage(_ delta: Int) {
@@ -507,6 +661,7 @@ class AimeInputController: IMKInputController {
         page = (page + delta + pageCount) % pageCount
         highlighted = 0
         showBar()
+        if translationPhase == .shown { updateMarkedText() }
     }
 
     private func selectCandidate(at index: Int) {
@@ -515,6 +670,11 @@ class AimeInputController: IMKInputController {
         switch candidate.kind {
         case .llmBest, .llmAlternative, .localSentence, .raw:
             commitFinal(confirmedText + candidate.text)
+        case .translation:
+            // 译文覆盖整个组合内容（含 confirmedText），单独提交
+            commitFinal(candidate.text, recordLearning: false)
+        case .translationSource:
+            commitFinal(candidate.text)
         case .word:
             partialConfirm(candidate)
         }
@@ -540,9 +700,24 @@ class AimeInputController: IMKInputController {
 
     private static let replacementRange = NSRange(location: NSNotFound, length: 0)
 
-    /// 已确认段=粗下划线；拼音预览=实线（LLM 过验）/点线；录音流式段=点线
+    /// 已确认段=粗下划线；拼音预览=实线（LLM 过验）/点线；录音流式段=点线；
+    /// 翻译态=高亮译文整体实线（左右键切候选时跟随）
     private func updateMarkedText() {
         guard let client = client() else { return }
+        if translationPhase == .shown {
+            let index = page * Self.pageSize + highlighted
+            let text = (index < candidates.count ? candidates[index].text : translationResult?.best)
+                ?? translationSource
+            client.setMarkedText(
+                NSAttributedString(string: text, attributes: [
+                    .underlineStyle: NSUnderlineStyle.single.rawValue,
+                    .markedClauseSegment: 0,
+                ]),
+                selectionRange: NSRange(location: text.utf16.count, length: 0),
+                replacementRange: Self.replacementRange
+            )
+            return
+        }
         let attributed = NSMutableAttributedString()
         if !confirmedText.isEmpty {
             attributed.append(NSAttributedString(string: confirmedText, attributes: [
@@ -573,6 +748,12 @@ class AimeInputController: IMKInputController {
             attributed.append(NSAttributedString(string: live, attributes: [
                 .underlineStyle: NSUnderlineStyle.patternDot.union(.single).rawValue,
                 .markedClauseSegment: 2,
+            ]))
+        }
+        if translationPhase == .pending {
+            attributed.append(NSAttributedString(string: " ⇢ ⋯", attributes: [
+                .underlineStyle: NSUnderlineStyle.patternDot.union(.single).rawValue,
+                .markedClauseSegment: 3,
             ]))
         }
         client.setMarkedText(
@@ -618,6 +799,8 @@ class AimeInputController: IMKInputController {
             llmVerdict = PinyinVerifier.verify(
                 candidate: result.best, segments: engineResult?.segments ?? []
             )
+            // 翻译态中只存结果不动 UI（避免打断译文候选浏览），退出翻译态时自然生效
+            guard translationPhase == .none else { return }
             rebuildCandidates()
             updateMarkedText()
         } catch {

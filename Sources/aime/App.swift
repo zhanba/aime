@@ -53,7 +53,7 @@ struct MenuContent: View {
 
         Divider()
 
-        Button("退出 aime") {
+        Button("退出 Aime") {
             NSApp.terminate(nil)
         }
         .keyboardShortcut("q")

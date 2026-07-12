@@ -9,6 +9,6 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.1.0</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>aime 后台服务需要使用麦克风进行语音输入。</string>
+	<string>Aime 后台服务需要使用麦克风进行语音输入。</string>
 </dict>
 </plist>

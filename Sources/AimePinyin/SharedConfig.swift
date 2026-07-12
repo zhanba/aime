@@ -86,7 +86,7 @@ public enum SharedConfig {
         let fuzzy = (d.array(forKey: "fuzzyRuleIDs") as? [String]).map(Set.init)
         return PinyinLLMConfig(
             apiBaseURL: d.string(forKey: "apiBaseURL") ?? "https://api.deepseek.com/v1",
-            apiModel: d.string(forKey: "apiModel") ?? "deepseek-chat",
+            apiModel: d.string(forKey: "apiModel") ?? "deepseek-v4-flash",
             apiKey: d.string(forKey: "apiKey") ?? "",
             enabledFuzzyRuleIDs: fuzzy ?? FuzzyRule.defaultEnabled
         )

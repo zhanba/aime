@@ -70,6 +70,8 @@ final class AppState: ObservableObject {
         Self.mirrorSharedConfig()
 
         daemon.bootstrap()
+        // 词库是本地整句/词候选的前提，缺失时自动补齐（约 12MB），不等用户去设置页点
+        LexiconInstaller.shared.installIfNeeded()
 
         Task {
             micGranted = await AudioRecorder.requestPermission()
@@ -96,17 +98,12 @@ final class AppState: ObservableObject {
         SharedConfig.mirrorASRFromApp(
             backendRaw: settings.asrBackend.rawValue,
             qwen3ModelID: settings.qwen3ModelID,
-            localeID: settings.localeID
+            localeID: Settings.recognitionLocaleID
         )
-        SharedConfig.mirrorPrivacyFromApp(
-            blockedApps: settings.privacyBlockedApps,
-            pureLocalMode: settings.pureLocalMode
-        )
-        SharedConfig.mirrorCompositionDisplay(showsPinyin: settings.compositionShowsPinyin)
-    }
-
-    private var frontmostBlocked: Bool {
-        SharedConfig.isBlocked(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+        // 纯本地模式/屏蔽应用已从产品中移除（API Key 留空即纯本地），清掉历史遗留值
+        SharedConfig.mirrorPrivacyFromApp(blockedApps: [], pureLocalMode: false)
+        // 组合区形态定死分词拼音（覆盖历史遗留的预览模式取值）
+        SharedConfig.mirrorCompositionDisplay(showsPinyin: true)
     }
 
     /// aime拼音 是当前输入法时，语音热键由 IME 处理（进 composition），app 侧让路
@@ -136,16 +133,16 @@ final class AppState: ObservableObject {
         let settings = Settings.current()
         return ASRSessionConfig(
             backend: settings.asrBackend,
-            localeID: settings.localeID,
+            localeID: Settings.recognitionLocaleID,
             qwen3ModelID: settings.qwen3ModelID,
             contextHint: contextHint
         )
     }
 
-    /// 选择会话后端：daemon 可用且用户开启时走 XPC，否则进程内。
+    /// 选择会话后端：daemon 可用走 XPC，否则自动回退进程内。
     private func resolveBackend() async -> ASRBackend {
         let settings = Settings.current()
-        if settings.useDaemon, await daemon.isHealthy() {
+        if await daemon.isHealthy() {
             executionMode = "daemon"
             return daemon.proxyBackend
         }
@@ -195,9 +192,9 @@ final class AppState: ObservableObject {
         let sessionID = sessionCounter
         let settings = Settings.current()
 
-        // 先采上下文：此刻焦点还在目标应用（隐私屏蔽应用不读）
-        contextSnapshot = (settings.contextEnabled && !frontmostBlocked)
-            ? ContextCapture.capture(maxChars: settings.contextMaxChars)
+        // 先采上下文：此刻焦点还在目标应用
+        contextSnapshot = settings.contextEnabled
+            ? ContextCapture.capture(maxChars: Settings.contextMaxChars)
             : ContextSnapshot(appName: NSWorkspace.shared.frontmostApplication?.localizedName, textBeforeCursor: nil)
         usedContext = false
         refineSkipped = settings.apiKey.isEmpty
@@ -267,7 +264,7 @@ final class AppState: ObservableObject {
 
                 let settings = Settings.current()
                 var output = raw
-                if !settings.apiKey.isEmpty, !settings.pureLocalMode, !self.frontmostBlocked {
+                if !settings.apiKey.isEmpty {
                     self.phase = .refining
                     self.usedContext = settings.contextEnabled && (self.contextSnapshot?.hasText ?? false)
                     do {
@@ -288,7 +285,7 @@ final class AppState: ObservableObject {
                 if (2 ... 8).contains(output.count) {
                     UserDictionary.shared.record(output, source: "voice")
                 }
-                TextInjector.inject(output, method: settings.injectionMethod)
+                TextInjector.inject(output)
                 self.phase = .done
                 try? await Task.sleep(nanoseconds: 1_800_000_000)
                 if self.phase == .done, self.sessionCounter == sessionID {
