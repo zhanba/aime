@@ -83,13 +83,10 @@ final class DaemonService: NSObject, AimeDaemonXPC {
     }
 }
 
-/// 取进程的代码签名 Team ID（未签名/ad-hoc 返回 nil）。
-func codeSigningTeamID(ofPID pid: pid_t) -> String? {
+/// 取本进程的代码签名 Team ID（未签名/ad-hoc 返回 nil）。
+func ownCodeSigningTeamID() -> String? {
     var code: SecCode?
-    let attributes = [kSecGuestAttributePid: pid] as CFDictionary
-    guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code else {
-        return nil
-    }
+    guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
     var staticCode: SecStaticCode?
     guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else {
         return nil
@@ -101,17 +98,47 @@ func codeSigningTeamID(ofPID pid: pid_t) -> String? {
     return dict[kSecCodeInfoTeamIdentifier as String] as? String
 }
 
-let ownTeamID = codeSigningTeamID(ofPID: getpid())
+extension NSXPCConnection {
+    /// 连接方 audit token。NSXPCConnection 未公开此属性，经 KVC 读取（直接分发无审核限制，
+    /// Objective-See/Sparkle 等同用此法）；取不到时返回 nil，调用方须拒绝连接。
+    var peerAuditToken: audit_token_t? {
+        guard let value = self.value(forKey: "auditToken") as? NSValue else { return nil }
+        var token = audit_token_t()
+        value.getValue(&token)
+        return token
+    }
+}
+
+/// 校验连接方满足签名要求：签名有效 + Apple 锚 + 与本进程相同 Team ID。
+/// 用 audit token 定位进程（pid 有复用竞态），SecCodeCheckValidity 做动态校验。
+func peerSatisfiesTeamRequirement(_ connection: NSXPCConnection, teamID: String) -> Bool {
+    guard let token = connection.peerAuditToken else {
+        NSLog("aime-daemon: 无法获取连接方 audit token")
+        return false
+    }
+    let tokenData = withUnsafeBytes(of: token) { Data($0) } as CFData
+    let attributes = [kSecGuestAttributeAudit: tokenData] as CFDictionary
+    var code: SecCode?
+    guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code else {
+        return false
+    }
+    let requirementString = "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\""
+    var requirement: SecRequirement?
+    guard SecRequirementCreateWithString(requirementString as CFString, [], &requirement) == errSecSuccess else {
+        return false
+    }
+    return SecCodeCheckValidity(code, [], requirement) == errSecSuccess
+}
+
+let ownTeamID = ownCodeSigningTeamID()
 
 final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
-        // 签名校验：连接方 Team ID 必须与本进程一致（aime.app / aime-ime 同证书）。
-        // 注：基于 pid 的校验存在理论上的 pid 复用竞态，正式分发前应改用 audit token。
+        // 签名校验：连接方须签名有效且 Team ID 与本进程一致（aime.app / aime-ime 同证书）。
         // 本进程未签名（开发 ad-hoc）时降级为同 UID 放行（launchd MachService 天然限同会话）。
         if let ownTeamID {
-            let peerTeamID = codeSigningTeamID(ofPID: newConnection.processIdentifier)
-            guard peerTeamID == ownTeamID else {
-                NSLog("aime-daemon 拒绝连接：peer team=\(peerTeamID ?? "nil") own=\(ownTeamID)")
+            guard peerSatisfiesTeamRequirement(newConnection, teamID: ownTeamID) else {
+                NSLog("aime-daemon 拒绝连接：pid=\(newConnection.processIdentifier) 未通过 Team ID \(ownTeamID) 签名校验")
                 return false
             }
         }

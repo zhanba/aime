@@ -42,29 +42,16 @@ enum DebugCLI {
         exit(0)
     }
 
-    /// `--register-ime`：向 TIS 注册 ~/Library/Input Methods/aime-ime.app 并启用。
+    /// `--register-ime`：仅注册已装到 ~/Library/Input Methods 的副本
+    /// （make install-ime 拷贝后调用；分发版走设置页按钮 IMEInstaller.install()）。
     private static func registerIME() {
-        let url = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Input Methods/aime-ime.app")
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            print("register-ime: 未找到 \(url.path)（先 make install-ime）")
+        do {
+            print(try IMEInstaller.register())
+            exit(0)
+        } catch {
+            print("register-ime: \(error.localizedDescription)")
             exit(1)
         }
-        let registerStatus = TISRegisterInputSource(url as CFURL)
-        print("TISRegisterInputSource: \(registerStatus == noErr ? "ok" : "错误 \(registerStatus)")")
-
-        let filter = [kTISPropertyBundleID as String: "com.zhanba.inputmethod.aime"] as CFDictionary
-        guard let list = TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource],
-              !list.isEmpty
-        else {
-            print("未找到已注册的输入源（可能需要注销重新登录后重试）")
-            exit(1)
-        }
-        for source in list {
-            let enableStatus = TISEnableInputSource(source)
-            print("TISEnableInputSource: \(enableStatus == noErr ? "ok" : "错误 \(enableStatus)")")
-        }
-        print("完成。到 系统设置 → 键盘 → 输入法 或菜单栏输入法图标里选择「Aime拼音」。")
-        exit(0)
     }
 
     /// `--daemon-prepare`：经 XPC 让 daemon 加载 Qwen3 0.6B。连跑两次对比耗时，

@@ -1,25 +1,20 @@
 import AimePinyin
 import SwiftUI
 
-/// 拼音输入法设置：词库更新、模糊音矩阵。安装提示仅在未安装时出现。
+/// 拼音输入法设置：词库更新、模糊音矩阵。安装/更新提示仅在需要时出现。
 struct PinyinSettingsTab: View {
     @State private var enabledRules: Set<String> = Settings.current().fuzzyRuleIDs
     @ObservedObject private var lexicon = LexiconInstaller.shared
-
-    private static let imeInstallPath = NSString(
-        string: "~/Library/Input Methods/aime-ime.app"
-    ).expandingTildeInPath
-
-    private var imeInstalled: Bool {
-        FileManager.default.fileExists(atPath: Self.imeInstallPath)
-    }
+    @State private var imeInstalled = IMEInstaller.isInstalled
+    @State private var imeUpdateAvailable = IMEInstaller.updateAvailable
+    @State private var installMessage: String?
+    @State private var installFailed = false
 
     var body: some View {
         Form {
-            if !imeInstalled {
+            if !imeInstalled || imeUpdateAvailable || installMessage != nil {
                 Section {
-                    Label("输入法尚未安装：终端执行 make install-ime", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.secondary)
+                    imeInstallRow
                 }
             }
 
@@ -52,6 +47,36 @@ struct PinyinSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private var imeInstallRow: some View {
+        HStack(alignment: .firstTextBaseline) {
+            if let installMessage {
+                Label(installMessage, systemImage: installFailed ? "xmark.circle.fill" : "checkmark.circle.fill")
+                    .foregroundStyle(installFailed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+            } else if !imeInstalled {
+                Label("输入法尚未安装", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.secondary)
+            } else {
+                Label("输入法有新版本", systemImage: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button(imeInstalled ? "更新输入法" : "安装输入法") { installIME() }
+        }
+    }
+
+    private func installIME() {
+        do {
+            installMessage = try IMEInstaller.install()
+            installFailed = false
+        } catch {
+            installMessage = error.localizedDescription
+            installFailed = true
+        }
+        imeInstalled = IMEInstaller.isInstalled
+        imeUpdateAvailable = IMEInstaller.updateAvailable
     }
 
     @ViewBuilder

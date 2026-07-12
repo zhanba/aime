@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Hardened Runtime 下访问麦克风必须显式声明（daemon 不可用时进程内 ASR 回退需要） -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

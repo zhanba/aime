@@ -44,6 +44,8 @@
 
 ## 里程碑
 
+> **发布流水线（2026-07-12）**：签名/打包/公证链路已就绪（[docs/release.md](docs/release.md)）——Hardened Runtime + entitlements、XPC audit token 校验、IME 内嵌 app 一键安装（IMEInstaller）、`scripts/release.sh`（版本注入→签名→公证→DMG→staple）。发布剩余门槛：Developer ID 证书（需付费开发者账号）、Sparkle 自动更新、LICENSE、实机走查与兼容矩阵。
+>
 > **当前状态（2026-07-11）**：M1 ✅、M2 ✅、M3 ✅、M3.5 ✅、M4 ✅（代码完成，实机走查清单待用户）（拼音容错强化+词库层，方案 [docs/M3.5-plan.md](docs/M3.5-plan.md)、原理 [docs/algorithm.md](docs/algorithm.md)）。四层架构落地：拼写变换统一框架（漏敲/多敲/句尾 partial）+ 白霜词库 37 万条（Viterbi 本地整句 62%，毫秒级/断网可用）+ LLM 整句 + 音节回验；自绘候选条 + 逐段确认。40 句含错测试集：首选 85%，句级覆盖 92%。下一步：M5 本地化（拼音小模型+约束解码）；欠账：M4 实机走查、真人录音测试集（ASR 评测现用 TTS 合成音，绝对值偏乐观）、M1 Air 基准、XPC 签名校验、IME 实机走查、LLM p50 0.97s 待优化。双拼明确不做（用户决策 2026-07-11）；词库下载 UI 已完成。
 
 ### M1 — 语音管线 MVP ✅（2026-07-10 完成，commit `4750704`）
