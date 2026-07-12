@@ -14,7 +14,7 @@ final class DaemonService: NSObject, AimeDaemonXPC {
     }
 
     func ping(reply: @escaping (String) -> Void) {
-        reply("aime-daemon 0.1.0 pid=\(ProcessInfo.processInfo.processIdentifier)")
+        reply("aime-daemon \(daemonVersion) pid=\(ProcessInfo.processInfo.processIdentifier)")
     }
 
     func prepare(configJSON: Data, reply: @escaping (String?) -> Void) {
@@ -82,6 +82,20 @@ final class DaemonService: NSObject, AimeDaemonXPC {
         }
     }
 }
+
+/// 版本号读宿主 app bundle 的 Info.plist（发布时由 release.sh 注入；daemon 自己的
+/// __info_plist 在链接期嵌入、不经版本注入，不可作数）。裸跑（非 bundle 内）时标 dev。
+let daemonVersion: String = {
+    let appURL = Bundle.main.bundleURL // Contents/MacOS
+        .deletingLastPathComponent()   // Contents
+        .deletingLastPathComponent()   // Aime.app
+    guard appURL.pathExtension == "app",
+          let info = Bundle(url: appURL)?.infoDictionary,
+          let short = info["CFBundleShortVersionString"] as? String,
+          let build = info["CFBundleVersion"] as? String
+    else { return "dev" }
+    return "\(short)(\(build))"
+}()
 
 /// 取本进程的代码签名 Team ID（未签名/ad-hoc 返回 nil）。
 func ownCodeSigningTeamID() -> String? {

@@ -69,6 +69,18 @@ gh release create v0.2.0 build/dist/Aime-0.2.0.dmg --title "Aime 0.2.0" --notes 
 - 换机发版：先 `generate_keys -f 文件` 导入私钥；
 - appcast 在 staple 之后生成（staple 改 DMG 内容，签名按最终文件算），顺序不能颠倒。
 
+## 开发机与正式安装版并存的坑
+
+`make bundle` 出的 build/aime.app（开发证书）与 /Applications/Aime.app（Developer ID）
+bundle id 相同，daemon 的 launchd 注册按 id 解析可能落到开发副本——签名与注册方不匹配
+→ spawn 一直 EX_CONFIG（daemon 拉不起来，XPC ping 失败）。恢复：
+
+```sh
+rm -rf build/aime.app && /Applications/Aime.app/Contents/MacOS/aime --daemon-reregister
+```
+
+开发期在 build 目录迭代 daemon 时反过来同理：先移走 /Applications 副本或接受注册漂移。
+
 ## 已知事项与欠账
 
 - **内嵌 IME 的公证票据**：只对外层 aime.app staple；用户点「安装输入法」拷出的 aime-ime.app
