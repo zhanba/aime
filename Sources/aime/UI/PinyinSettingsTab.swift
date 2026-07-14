@@ -6,13 +6,12 @@ struct PinyinSettingsTab: View {
     @State private var enabledRules: Set<String> = Settings.current().fuzzyRuleIDs
     @ObservedObject private var lexicon = LexiconInstaller.shared
     @State private var imeInstalled = IMEInstaller.isInstalled
-    @State private var imeUpdateAvailable = IMEInstaller.updateAvailable
     @State private var installMessage: String?
     @State private var installFailed = false
 
     var body: some View {
         Form {
-            if !imeInstalled || imeUpdateAvailable || installMessage != nil {
+            if !imeInstalled || installMessage != nil {
                 Section {
                     imeInstallRow
                 }
@@ -55,15 +54,14 @@ struct PinyinSettingsTab: View {
             if let installMessage {
                 Label(installMessage, systemImage: installFailed ? "xmark.circle.fill" : "checkmark.circle.fill")
                     .foregroundStyle(installFailed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
-            } else if !imeInstalled {
-                Label("输入法尚未安装", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.secondary)
             } else {
-                Label("输入法有新版本", systemImage: "arrow.triangle.2.circlepath")
+                Label("输入法尚未安装", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button(imeInstalled ? "更新输入法" : "安装输入法") { installIME() }
+            if !imeInstalled {
+                Button("安装输入法") { installIME() }
+            }
         }
     }
 
@@ -76,7 +74,6 @@ struct PinyinSettingsTab: View {
             installFailed = true
         }
         imeInstalled = IMEInstaller.isInstalled
-        imeUpdateAvailable = IMEInstaller.updateAvailable
     }
 
     @ViewBuilder

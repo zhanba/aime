@@ -54,6 +54,18 @@ enum IMEInstaller {
         return try? FileManager.default.attributesOfItem(atPath: exe.path)[.modificationDate] as? Date
     }
 
+    /// 已装副本落后于内嵌副本时静默覆盖更新（app 启动时调用：Sparkle 更新主程序后
+    /// 输入法副本自动跟进，设置页不再需要手动"更新输入法"入口）。
+    static func autoUpdateIfNeeded() {
+        guard isInstalled, updateAvailable else { return }
+        do {
+            try install()
+            NSLog("aime: 输入法副本已自动更新到内嵌版本")
+        } catch {
+            NSLog("aime: 输入法副本自动更新失败：\(error.localizedDescription)")
+        }
+    }
+
     /// 安装（或覆盖更新）并注册启用。返回用户可读的结果信息。
     @discardableResult
     static func install() throws -> String {
