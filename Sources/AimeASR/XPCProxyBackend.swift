@@ -30,6 +30,7 @@ public final class XPCProxyBackend: ASRBackend {
 public final class XPCProxySession: ASRSession {
     public var onUpdate: (@MainActor (String) -> Void)?
     public var onLevel: (@MainActor (Float) -> Void)?
+    public var onCaptureReady: (@MainActor (Bool) -> Void)?
 
     private let client: DaemonClient
 
@@ -43,6 +44,9 @@ public final class XPCProxySession: ASRSession {
         }
         client.onLevel = { [weak self] level in
             Task { @MainActor in self?.onLevel?(level) }
+        }
+        client.onCaptureReady = { [weak self] isBluetooth in
+            Task { @MainActor in self?.onCaptureReady?(isBluetooth) }
         }
         let json = try JSONEncoder().encode(config)
         if let error = await client.startSession(configJSON: json) {

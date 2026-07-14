@@ -13,6 +13,7 @@ enum SettingsKey {
     static let hotkey = "hotkey"
     static let refineStyle = "refineStyle"
     static let bluetoothMicStrategy = "bluetoothMicStrategy"
+    static let startChimeAlways = "startChimeAlways"
 }
 
 enum HotkeyChoice: String, CaseIterable, Identifiable {
@@ -62,6 +63,9 @@ struct Settings {
     var hotkey: HotkeyChoice
     var refineStyle: RefineStyle
     var bluetoothMicStrategy: BluetoothMicStrategy
+    /// 蓝牙输入时也播放开始提示音（默认关：多数耳机切 HFP 自带提示音，叠播更烦；
+    /// 切换静默的耳机开这个兜底）。非蓝牙输入始终播放，不受此项影响。
+    var startChimeAlways: Bool
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -74,6 +78,7 @@ struct Settings {
             SettingsKey.hotkey: HotkeyChoice.rightOption.rawValue,
             SettingsKey.refineStyle: RefineStyle.clean.rawValue,
             SettingsKey.bluetoothMicStrategy: BluetoothMicStrategy.quickRelease.rawValue,
+            SettingsKey.startChimeAlways: false,
         ])
     }
 
@@ -90,7 +95,8 @@ struct Settings {
             refineStyle: RefineStyle(rawValue: d.string(forKey: SettingsKey.refineStyle) ?? "") ?? .clean,
             bluetoothMicStrategy: BluetoothMicStrategy(
                 rawValue: d.string(forKey: SettingsKey.bluetoothMicStrategy) ?? ""
-            ) ?? .quickRelease
+            ) ?? .quickRelease,
+            startChimeAlways: d.bool(forKey: SettingsKey.startChimeAlways)
         )
     }
 }

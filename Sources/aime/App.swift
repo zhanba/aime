@@ -75,6 +75,7 @@ struct MenuContent: View {
         case .transcribing: return "整理转写…"
         case .refining: return "润色中…"
         case .done: return "已完成"
+        case .noSpeech: return "没有听到内容"
         case .failed(let message): return "出错：\(message)"
         }
     }

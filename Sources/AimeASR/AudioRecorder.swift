@@ -8,6 +8,10 @@ import os
 public final class AudioRecorder {
     public var onBuffer: ((AVAudioPCMBuffer) -> Void)?
     public var onLevel: ((Float) -> Void)?
+    /// 采集真正就绪（本次会话首帧音频到达）时回调一次，参数为输入设备是否蓝牙。
+    /// 「正在听」UI 与开始提示音都应以此为准，而不是 start() 返回——
+    /// 蓝牙 HFP 建立约 1 秒，期间说的话会丢。
+    public var onCaptureReady: ((Bool) -> Void)?
     /// 蓝牙耳机收音策略（默认快速释放），见 BluetoothMicStrategy。
     public var bluetoothMicStrategy: BluetoothMicStrategy = .quickRelease
 
@@ -69,6 +73,9 @@ final class CaptureCore {
     private let sinkLock = NSLock()
     private var bufferSink: ((AVAudioPCMBuffer) -> Void)?
     private var levelSink: ((Float) -> Void)?
+    /// 一次性：首帧送达 owner 时触发后置 nil（热引擎复用时首帧几乎立即到达）
+    private var readySink: ((Bool) -> Void)?
+    private var activeInputIsBluetooth = false
     private weak var owner: AudioRecorder?
     /// 最近一次 acquire/warmUp 生效的策略，决定 release 后管线去留
     private var strategy: BluetoothMicStrategy = .quickRelease
@@ -85,18 +92,21 @@ final class CaptureCore {
             idleShutdown = nil
             owner = recorder
             strategy = recorder.bluetoothMicStrategy
+
+            let wantBuiltin = strategy == .builtinMic
+                && Self.defaultInputIsBluetooth()
+                && Self.builtInMicrophone() != nil
+
             sinkLock.lock()
             bufferSink = { [weak recorder] buffer in recorder?.onBuffer?(buffer) }
             levelSink = { [weak recorder] level in recorder?.onLevel?(level) }
+            readySink = { [weak recorder] isBluetooth in recorder?.onCaptureReady?(isBluetooth) }
+            activeInputIsBluetooth = !wantBuiltin && Self.defaultInputIsBluetooth()
             sinkLock.unlock()
             diagFrames = 0
             diagMaxRMS = 0
             diagWindowFrames = 0
             engineStartedAt = Date()
-
-            let wantBuiltin = strategy == .builtinMic
-                && Self.defaultInputIsBluetooth()
-                && Self.builtInMicrophone() != nil
 
             if !wantBuiltin, let engine, engine.isRunning,
                engineDeviceID == Self.defaultInputDeviceID() {
@@ -120,6 +130,7 @@ final class CaptureCore {
             sinkLock.lock()
             bufferSink = nil
             levelSink = nil
+            readySink = nil
             sinkLock.unlock()
             Self.dlog("会话结束 总帧=\(self.diagFrames) 峰值RMS=\(self.diagMaxRMS)")
 
@@ -149,8 +160,12 @@ final class CaptureCore {
         sinkLock.lock()
         let sink = bufferSink
         let level = levelSink
+        let ready = readySink
+        if ready != nil { readySink = nil }
+        let isBluetooth = activeInputIsBluetooth
         sinkLock.unlock()
         guard let sink else { return } // 保温期：丢弃数据，只维持链路
+        ready?(isBluetooth)
         sink(buffer)
         let rms = Self.rawRMS(of: buffer)
         level?(Self.normalizeLevel(rms))

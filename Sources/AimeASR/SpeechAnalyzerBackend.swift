@@ -40,6 +40,7 @@ public final class SpeechAnalyzerSession: ASRSession {
 
     public var onUpdate: (@MainActor (String) -> Void)?
     public var onLevel: (@MainActor (Float) -> Void)?
+    public var onCaptureReady: (@MainActor (Bool) -> Void)?
 
     public init() {}
 
@@ -78,6 +79,9 @@ public final class SpeechAnalyzerSession: ASRSession {
         recorder.onBuffer = { [weak self] buffer in self?.feed(buffer) }
         recorder.onLevel = { [weak self] level in
             Task { @MainActor in self?.onLevel?(level) }
+        }
+        recorder.onCaptureReady = { [weak self] isBluetooth in
+            Task { @MainActor in self?.onCaptureReady?(isBluetooth) }
         }
         try recorder.start()
 

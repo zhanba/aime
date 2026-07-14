@@ -100,6 +100,7 @@ class AimeInputController: IMKInputController {
         voiceOverlayModel.phase = .idle
         voiceOverlayModel.audioLevel = 0
         voiceOverlayModel.usedContext = false
+        voiceOverlayModel.captureReady = false
         voiceOverlay.hide()
     }
 
@@ -332,7 +333,15 @@ class AimeInputController: IMKInputController {
             contextHint: contextHint.isEmpty ? nil : String(contextHint.suffix(300)),
             bluetoothMicStrategy: BluetoothMicStrategy(rawValue: asrConfig.bluetoothMicStrategyRaw)
         )
+        Self.voiceOverlayModel.captureReady = false
         showVoiceOverlay(.recording)
+        Self.daemonClient.onCaptureReady = { [weak self] inputIsBluetooth in
+            DispatchQueue.main.async {
+                guard let self, self.voiceRecording else { return }
+                Self.voiceOverlayModel.captureReady = true
+                VoiceChime.playStart(inputIsBluetooth: inputIsBluetooth, always: asrConfig.startChimeAlways)
+            }
+        }
         Self.daemonClient.onUpdate = { [weak self] text in
             DispatchQueue.main.async {
                 guard let self, self.voiceRecording else { return }
@@ -388,7 +397,7 @@ class AimeInputController: IMKInputController {
             .trimmingCharacters(in: CharacterSet(charactersIn: "。，！？"))
         guard !trimmed.isEmpty else {
             updateMarkedText()
-            flashVoiceOverlay(.failed("没有听到内容"))
+            flashVoiceOverlay(.noSpeech)
             return
         }
         if !rawBuffer.isEmpty, let segments = engineResult?.segments {

@@ -34,6 +34,7 @@ private struct VoiceSettingsTab: View {
     @AppStorage(SettingsKey.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
     @AppStorage(SettingsKey.refineStyle) private var refineStyle = RefineStyle.clean.rawValue
     @AppStorage(SettingsKey.bluetoothMicStrategy) private var bluetoothMicStrategy = BluetoothMicStrategy.quickRelease.rawValue
+    @AppStorage(SettingsKey.startChimeAlways) private var startChimeAlways = false
     @ObservedObject private var state = AppState.shared
     @ObservedObject private var daemon = AppState.shared.daemon
     @State private var bluetoothInput = AudioRecorder.defaultInputIsBluetoothHeadset
@@ -110,8 +111,15 @@ private struct VoiceSettingsTab: View {
                             Text(choice.displayName).tag(choice)
                         }
                     }
+                    if micStrategy.wrappedValue == .quickRelease {
+                        Toggle("始终播放开始提示音", isOn: $startChimeAlways)
+                    }
                 } footer: {
-                    Text("耳机麦启动约 1 秒；内置麦克风即按即录。")
+                    Text(
+                        micStrategy.wrappedValue == .quickRelease
+                            ? "耳机麦启动约 1 秒；内置麦克风即按即录。听不到耳机自带的启动提示音时，开启始终播放。"
+                            : "耳机麦启动约 1 秒；内置麦克风即按即录。"
+                    )
                 }
             }
             Section {

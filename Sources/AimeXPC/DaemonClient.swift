@@ -12,6 +12,7 @@ public final class DaemonClient: NSObject, AimeDaemonClientXPC {
     public var onUpdate: ((String) -> Void)?
     public var onLevel: ((Float) -> Void)?
     public var onProgress: ((String) -> Void)?
+    public var onCaptureReady: ((Bool) -> Void)?
 
     override public init() {
         super.init()
@@ -117,6 +118,10 @@ public final class DaemonClient: NSObject, AimeDaemonClientXPC {
 
     public func modelProgress(_ status: String) {
         onProgress?(status)
+    }
+
+    public func captureReady(_ inputIsBluetooth: Bool) {
+        onCaptureReady?(inputIsBluetooth)
     }
 }
 

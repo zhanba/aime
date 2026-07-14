@@ -26,10 +26,13 @@ public enum SharedConfig {
         public var qwen3ModelID: String
         public var localeID: String
         public var bluetoothMicStrategyRaw: String
+        /// 蓝牙输入时也播放开始提示音（非蓝牙始终播放）
+        public var startChimeAlways: Bool
     }
 
     public static func mirrorASRFromApp(
-        backendRaw: String, qwen3ModelID: String, localeID: String, bluetoothMicStrategyRaw: String
+        backendRaw: String, qwen3ModelID: String, localeID: String,
+        bluetoothMicStrategyRaw: String, startChimeAlways: Bool
     ) {
         let d = defaults
         if d.string(forKey: "asrBackend") != backendRaw { d.set(backendRaw, forKey: "asrBackend") }
@@ -37,6 +40,9 @@ public enum SharedConfig {
         if d.string(forKey: "localeID") != localeID { d.set(localeID, forKey: "localeID") }
         if d.string(forKey: "bluetoothMicStrategy") != bluetoothMicStrategyRaw {
             d.set(bluetoothMicStrategyRaw, forKey: "bluetoothMicStrategy")
+        }
+        if d.bool(forKey: "startChimeAlways") != startChimeAlways {
+            d.set(startChimeAlways, forKey: "startChimeAlways")
         }
     }
 
@@ -97,7 +103,8 @@ public enum SharedConfig {
             backendRaw: d.string(forKey: "asrBackend") ?? "qwen3ASR",
             qwen3ModelID: d.string(forKey: "qwen3ModelID") ?? "aufklarer/Qwen3-ASR-0.6B-MLX-4bit",
             localeID: d.string(forKey: "localeID") ?? "zh_CN",
-            bluetoothMicStrategyRaw: d.string(forKey: "bluetoothMicStrategy") ?? ""
+            bluetoothMicStrategyRaw: d.string(forKey: "bluetoothMicStrategy") ?? "",
+            startChimeAlways: d.bool(forKey: "startChimeAlways")
         )
     }
 

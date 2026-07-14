@@ -22,4 +22,6 @@ public let aimeDaemonMachServiceName = "com.zhanba.aime.daemon"
     func audioLevel(_ level: Float)
     /// 模型准备进度文案；空串表示进度清除。
     func modelProgress(_ status: String)
+    /// 采集真正就绪（首帧音频到达），参数为输入设备是否蓝牙。
+    func captureReady(_ inputIsBluetooth: Bool)
 }

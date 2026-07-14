@@ -119,7 +119,8 @@ final class AppState: ObservableObject {
             backendRaw: settings.asrBackend.rawValue,
             qwen3ModelID: settings.qwen3ModelID,
             localeID: Settings.recognitionLocaleID,
-            bluetoothMicStrategyRaw: settings.bluetoothMicStrategy.rawValue
+            bluetoothMicStrategyRaw: settings.bluetoothMicStrategy.rawValue,
+            startChimeAlways: settings.startChimeAlways
         )
         SharedConfig.mirrorRefineFromApp(refineStyleRaw: settings.refineStyle.rawValue)
         // 纯本地模式/屏蔽应用已从产品中移除（API Key 留空即纯本地），清掉历史遗留值
@@ -234,6 +235,7 @@ final class AppState: ObservableObject {
         let config = sessionConfig(contextHint: hintParts.isEmpty ? nil : hintParts.joined(separator: "\n"))
 
         phase = .recording
+        voice.captureReady = false
         overlay.show(model: voice)
 
         Task {
@@ -247,6 +249,11 @@ final class AppState: ObservableObject {
             }
             session.onLevel = { [weak self] level in
                 self?.audioLevel = level
+            }
+            session.onCaptureReady = { [weak self] inputIsBluetooth in
+                guard let self, self.sessionCounter == sessionID else { return }
+                self.voice.captureReady = true
+                VoiceChime.playStart(inputIsBluetooth: inputIsBluetooth, always: settings.startChimeAlways)
             }
             self.asrSession = session
             do {
@@ -279,7 +286,7 @@ final class AppState: ObservableObject {
                 self.asrSession = nil
 
                 guard !raw.isEmpty else {
-                    self.fail("没有听到内容")
+                    self.flash(.noSpeech)
                     return
                 }
 
@@ -342,12 +349,18 @@ final class AppState: ObservableObject {
     }
 
     private func fail(_ message: String) {
-        phase = .failed(message)
+        flash(.failed(message))
+    }
+
+    /// 终态短暂停留后自动收起（出错 3s、没听到内容 2s）
+    private func flash(_ transient: VoicePhase) {
+        phase = transient
         overlay.show(model: voice)
         let sessionID = sessionCounter
+        let seconds: UInt64 = transient == .noSpeech ? 2_000_000_000 : 3_000_000_000
         Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            if case .failed = self.phase, self.sessionCounter == sessionID {
+            try? await Task.sleep(nanoseconds: seconds)
+            if self.phase == transient, self.sessionCounter == sessionID {
                 self.phase = .idle
                 self.overlay.hide()
             }

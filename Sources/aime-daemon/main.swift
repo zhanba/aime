@@ -48,6 +48,9 @@ final class DaemonService: NSObject, AimeDaemonXPC {
                 session.onLevel = { [weak self] level in
                     self?.client()?.audioLevel(level)
                 }
+                session.onCaptureReady = { [weak self] isBluetooth in
+                    self?.client()?.captureReady(isBluetooth)
+                }
                 self.session = session
                 try await session.start(config: config)
                 reply(nil)

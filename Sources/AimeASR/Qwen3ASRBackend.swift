@@ -105,6 +105,7 @@ actor Qwen3Inference {
 public final class Qwen3ASRSession: ASRSession {
     public var onUpdate: (@MainActor (String) -> Void)?
     public var onLevel: (@MainActor (Float) -> Void)?
+    public var onCaptureReady: (@MainActor (Bool) -> Void)?
 
     private let inference: Qwen3Inference
     private let recorder = AudioRecorder()
@@ -141,6 +142,9 @@ public final class Qwen3ASRSession: ASRSession {
         recorder.onBuffer = { [weak self] buffer in self?.feed(buffer) }
         recorder.onLevel = { [weak self] level in
             Task { @MainActor in self?.onLevel?(level) }
+        }
+        recorder.onCaptureReady = { [weak self] isBluetooth in
+            Task { @MainActor in self?.onCaptureReady?(isBluetooth) }
         }
         try recorder.start()
         startPartialLoop()

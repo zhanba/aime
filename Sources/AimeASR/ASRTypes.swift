@@ -19,6 +19,9 @@ public protocol ASRSession: AnyObject {
     var onUpdate: (@MainActor (String) -> Void)? { get set }
     /// 录音电平（0...1），在 MainActor 上回调。
     var onLevel: (@MainActor (Float) -> Void)? { get set }
+    /// 采集真正就绪（首帧音频到达）时回调一次，参数为输入设备是否蓝牙。
+    /// 参见 AudioRecorder.onCaptureReady。
+    var onCaptureReady: (@MainActor (Bool) -> Void)? { get set }
     func start(config: ASRSessionConfig) async throws
     /// 结束输入并等待定稿。
     func finish() async throws -> ASRResult
