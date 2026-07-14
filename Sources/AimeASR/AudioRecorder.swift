@@ -17,6 +17,11 @@ public final class AudioRecorder {
         await AVCaptureDevice.requestAccess(for: .audio)
     }
 
+    /// 系统默认输入是否为蓝牙耳机（设置页据此决定是否展示收音选项）
+    public static var defaultInputIsBluetoothHeadset: Bool {
+        CaptureCore.defaultInputIsBluetooth()
+    }
+
     public func start() throws {
         try CaptureCore.shared.acquire(for: self)
     }
@@ -374,7 +379,7 @@ final class CaptureCore {
         return deviceID
     }
 
-    private static func defaultInputIsBluetooth() -> Bool {
+    static func defaultInputIsBluetooth() -> Bool {
         guard let deviceID = defaultInputDeviceID() else { return false }
         var transport: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)

@@ -1,5 +1,6 @@
 import AimeASR
 import AimePinyin
+import AimeUI
 import AppKit
 import Carbon
 import SwiftUI
@@ -10,22 +11,39 @@ import SwiftUI
 final class AppState: ObservableObject {
     static let shared = AppState()
 
-    enum Phase: Equatable {
-        case idle
-        case preparingModel
-        case recording
-        case transcribing
-        case refining
-        case done
-        case failed(String)
+    /// 语音会话可视状态（浮层数据源），与 IME 进程共用同一套 overlay UI
+    let voice = VoiceOverlayModel()
+
+    var phase: VoicePhase {
+        get { voice.phase }
+        set { voice.phase = newValue }
     }
 
-    @Published var phase: Phase = .idle
-    @Published var audioLevel: Float = 0
-    @Published var liveTranscript: String = ""
-    @Published var finalText: String = ""
-    @Published var usedContext = false
-    @Published var refineSkipped = false
+    var audioLevel: Float {
+        get { voice.audioLevel }
+        set { voice.audioLevel = newValue }
+    }
+
+    var liveTranscript: String {
+        get { voice.liveTranscript }
+        set { voice.liveTranscript = newValue }
+    }
+
+    var finalText: String {
+        get { voice.finalText }
+        set { voice.finalText = newValue }
+    }
+
+    var usedContext: Bool {
+        get { voice.usedContext }
+        set { voice.usedContext = newValue }
+    }
+
+    var refineSkipped: Bool {
+        get { voice.refineSkipped }
+        set { voice.refineSkipped = newValue }
+    }
+
     @Published var micGranted = false
     @Published var accessibilityGranted = false
     @Published var modelReady = false
@@ -36,7 +54,7 @@ final class AppState: ObservableObject {
 
     let daemon = DaemonManager()
 
-    private let overlay = OverlayController()
+    private let overlay = VoiceOverlayController()
     private let hotkey = HotkeyMonitor()
     private var asrSession: ASRSession?
     private var contextSnapshot: ContextSnapshot?
@@ -103,6 +121,7 @@ final class AppState: ObservableObject {
             localeID: Settings.recognitionLocaleID,
             bluetoothMicStrategyRaw: settings.bluetoothMicStrategy.rawValue
         )
+        SharedConfig.mirrorRefineFromApp(refineStyleRaw: settings.refineStyle.rawValue)
         // 纯本地模式/屏蔽应用已从产品中移除（API Key 留空即纯本地），清掉历史遗留值
         SharedConfig.mirrorPrivacyFromApp(blockedApps: [], pureLocalMode: false)
         // 组合区形态定死分词拼音（覆盖历史遗留的预览模式取值）
@@ -197,9 +216,7 @@ final class AppState: ObservableObject {
         let settings = Settings.current()
 
         // 先采上下文：此刻焦点还在目标应用
-        contextSnapshot = settings.contextEnabled
-            ? ContextCapture.capture(maxChars: Settings.contextMaxChars)
-            : ContextSnapshot(appName: NSWorkspace.shared.frontmostApplication?.localizedName, textBeforeCursor: nil)
+        contextSnapshot = ContextCapture.capture(maxChars: Settings.contextMaxChars)
         usedContext = false
         refineSkipped = settings.apiKey.isEmpty
         liveTranscript = ""
@@ -207,7 +224,7 @@ final class AppState: ObservableObject {
 
         // 识别偏置：光标前文本 + 用户词库热词（词库双向增强的语音侧入口）
         var hintParts: [String] = []
-        if settings.contextEnabled, let before = contextSnapshot?.textBeforeCursor, !before.isEmpty {
+        if let before = contextSnapshot?.textBeforeCursor, !before.isEmpty {
             hintParts.append(String(before.suffix(200)))
         }
         let hotwords = UserDictionary.shared.topEntries(12)
@@ -217,7 +234,7 @@ final class AppState: ObservableObject {
         let config = sessionConfig(contextHint: hintParts.isEmpty ? nil : hintParts.joined(separator: "\n"))
 
         phase = .recording
-        overlay.show(state: self)
+        overlay.show(model: voice)
 
         Task {
             let session = await resolveBackend().makeSession()
@@ -270,15 +287,24 @@ final class AppState: ObservableObject {
                 var output = raw
                 if !settings.apiKey.isEmpty {
                     self.phase = .refining
-                    self.usedContext = settings.contextEnabled && (self.contextSnapshot?.hasText ?? false)
+                    self.usedContext = self.contextSnapshot?.hasText ?? false
                     do {
-                        output = try await LLMRefiner().refine(.init(
-                            rawTranscript: raw,
-                            context: settings.contextEnabled ? self.contextSnapshot : nil,
-                            settings: settings
-                        ))
+                        let context = self.contextSnapshot
+                        output = try await VoiceRefiner().refine(
+                            transcript: raw,
+                            appName: context?.appName,
+                            textBeforeCursor: context?.textBeforeCursor,
+                            style: settings.refineStyle,
+                            config: PinyinLLMConfig(
+                                apiBaseURL: settings.apiBaseURL,
+                                apiModel: settings.apiModel,
+                                apiKey: settings.apiKey,
+                                enabledFuzzyRuleIDs: []
+                            )
+                        )
                     } catch {
                         // 精修失败回退原始转写，不阻塞输入
+                        NSLog("语音精修失败，已回退原文: \(error)")
                         output = raw
                         self.refineSkipped = true
                     }
@@ -317,7 +343,7 @@ final class AppState: ObservableObject {
 
     private func fail(_ message: String) {
         phase = .failed(message)
-        overlay.show(state: self)
+        overlay.show(model: voice)
         let sessionID = sessionCounter
         Task {
             try? await Task.sleep(nanoseconds: 3_000_000_000)

@@ -1,3 +1,4 @@
+import AimeUI
 import AppKit
 import SwiftUI
 
@@ -5,6 +6,7 @@ import SwiftUI
 struct AimeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @ObservedObject private var state = AppState.shared
+    @ObservedObject private var voice = AppState.shared.voice
 
     init() {
         DebugCLI.runIfNeeded()
@@ -12,7 +14,7 @@ struct AimeApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContent(state: state)
+            MenuContent(state: state, voice: voice)
         } label: {
             Image(systemName: menuIcon)
         }
@@ -23,7 +25,7 @@ struct AimeApp: App {
     }
 
     private var menuIcon: String {
-        switch state.phase {
+        switch voice.phase {
         case .recording: return "waveform.circle.fill"
         case .transcribing, .refining, .preparingModel: return "waveform.circle"
         default: return "waveform"
@@ -33,6 +35,7 @@ struct AimeApp: App {
 
 struct MenuContent: View {
     @ObservedObject var state: AppState
+    @ObservedObject var voice: VoiceOverlayModel
 
     var body: some View {
         Text(statusLine)
@@ -65,7 +68,7 @@ struct MenuContent: View {
 
     private var statusLine: String {
         let hotkeyName = Settings.current().hotkey.displayName
-        switch state.phase {
+        switch voice.phase {
         case .idle: return state.modelReady ? "按住 \(hotkeyName) 说话" : "语音模型准备中…"
         case .preparingModel: return "语音模型准备中…"
         case .recording: return "正在录音…"

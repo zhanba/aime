@@ -12,7 +12,6 @@ enum SettingsKey {
     static let apiKey = "apiKey" // TODO: M2 迁移到 Keychain
     static let hotkey = "hotkey"
     static let refineStyle = "refineStyle"
-    static let contextEnabled = "contextEnabled"
     static let bluetoothMicStrategy = "bluetoothMicStrategy"
 }
 
@@ -32,26 +31,6 @@ enum HotkeyChoice: String, CaseIterable, Identifiable {
     }
 }
 
-/// 精修输出风格：一个维度替代「去填充词/转书面」两个独立开关
-enum RefineStyle: String, CaseIterable, Identifiable {
-    case raw
-    case clean
-    case formal
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .raw: return "原样（保留口语风格）"
-        case .clean: return "清爽（去除嗯、就是说等填充词）"
-        case .formal: return "书面（整理为书面表达）"
-        }
-    }
-
-    var removesFillers: Bool { self != .raw }
-    var formalizes: Bool { self == .formal }
-}
-
 /// Qwen3-ASR 可选档位（HF 上的 MLX 转换版）
 enum Qwen3ModelChoice: String, CaseIterable, Identifiable {
     case small4bit = "aufklarer/Qwen3-ASR-0.6B-MLX-4bit"
@@ -61,8 +40,8 @@ enum Qwen3ModelChoice: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .small4bit: return "标准（约 400MB）"
-        case .large8bit: return "高精度（约 1.8GB，内存充足时选这个）"
+        case .small4bit: return "标准（400MB）"
+        case .large8bit: return "高精度（1.8GB）"
         }
     }
 }
@@ -82,7 +61,6 @@ struct Settings {
     var apiKey: String
     var hotkey: HotkeyChoice
     var refineStyle: RefineStyle
-    var contextEnabled: Bool
     var bluetoothMicStrategy: BluetoothMicStrategy
 
     static func registerDefaults() {
@@ -95,7 +73,6 @@ struct Settings {
             SettingsKey.apiKey: "",
             SettingsKey.hotkey: HotkeyChoice.rightOption.rawValue,
             SettingsKey.refineStyle: RefineStyle.clean.rawValue,
-            SettingsKey.contextEnabled: true,
             SettingsKey.bluetoothMicStrategy: BluetoothMicStrategy.quickRelease.rawValue,
         ])
     }
@@ -111,7 +88,6 @@ struct Settings {
             apiKey: d.string(forKey: SettingsKey.apiKey) ?? "",
             hotkey: HotkeyChoice(rawValue: d.string(forKey: SettingsKey.hotkey) ?? "") ?? .rightOption,
             refineStyle: RefineStyle(rawValue: d.string(forKey: SettingsKey.refineStyle) ?? "") ?? .clean,
-            contextEnabled: d.bool(forKey: SettingsKey.contextEnabled),
             bluetoothMicStrategy: BluetoothMicStrategy(
                 rawValue: d.string(forKey: SettingsKey.bluetoothMicStrategy) ?? ""
             ) ?? .quickRelease

@@ -40,6 +40,18 @@ public enum SharedConfig {
         }
     }
 
+    // MARK: - 语音精修
+
+    public static func mirrorRefineFromApp(refineStyleRaw: String) {
+        if defaults.string(forKey: "refineStyle") != refineStyleRaw {
+            defaults.set(refineStyleRaw, forKey: "refineStyle")
+        }
+    }
+
+    public static var refineStyle: RefineStyle {
+        RefineStyle(rawValue: defaults.string(forKey: "refineStyle") ?? "") ?? .clean
+    }
+
     // MARK: - 组合区显示
 
     /// true=显示分词拼音（主流形态，默认）；false=显示转换预览

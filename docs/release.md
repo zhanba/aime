@@ -2,6 +2,7 @@
 
 > 分发方式：直接分发（DMG + GitHub Release）+ 公证，不走 App Store。
 > 一条命令：`scripts/release.sh <版本号>`。本文记录一次性准备、发版步骤与欠账。
+> CI 自动发布（tag 触发全流程）方案见 docs/ci-release.md。
 
 ## 一次性准备
 

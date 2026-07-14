@@ -75,7 +75,7 @@ public enum BluetoothMicStrategy: String, CaseIterable, Identifiable, Codable, S
 
     public var displayName: String {
         switch self {
-        case .quickRelease: return "耳机麦克风（录完立即归还耳机）"
+        case .quickRelease: return "耳机麦克风"
         case .builtinMic: return "Mac 内置麦克风"
         }
     }

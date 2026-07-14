@@ -1,9 +1,11 @@
 import AimeASR
+import AimePinyin
 import SwiftUI
 
 /// 分页式设置窗（macOS 标准形态）。分组按用户心智而非模块架构：
-/// 语音（怎么说）/ 拼音（怎么打）/ 教它（词库）/ AI 服务（大脑与数据）。
-/// 权限、后台服务这类排障项不单设页面：正常时不可见，异常时在语音页浮出。
+/// 语音（怎么说）/ 拼音（怎么打，含词库）/ AI 服务（大脑与数据）。
+/// 权限、后台服务这类排障项不单设页面：正常时不可见，异常时在语音页浮出；
+/// 蓝牙收音选项同理，只在默认输入是蓝牙耳机时出现。
 struct SettingsView: View {
     var body: some View {
         TabView {
@@ -11,8 +13,6 @@ struct SettingsView: View {
                 .tabItem { Label("语音", systemImage: "mic") }
             PinyinSettingsTab()
                 .tabItem { Label("拼音", systemImage: "keyboard") }
-            DictionaryTab()
-                .tabItem { Label("教它", systemImage: "book") }
             AIServiceTab()
                 .tabItem { Label("AI 服务", systemImage: "sparkles") }
             AboutTab()
@@ -36,6 +36,7 @@ private struct VoiceSettingsTab: View {
     @AppStorage(SettingsKey.bluetoothMicStrategy) private var bluetoothMicStrategy = BluetoothMicStrategy.quickRelease.rawValue
     @ObservedObject private var state = AppState.shared
     @ObservedObject private var daemon = AppState.shared.daemon
+    @State private var bluetoothInput = AudioRecorder.defaultInputIsBluetoothHeadset
 
     private var enhancedRecognition: Binding<Bool> {
         Binding(
@@ -85,7 +86,7 @@ private struct VoiceSettingsTab: View {
                 }
             }
             Section {
-                Toggle("增强识别（本地 AI 模型）", isOn: enhancedRecognition)
+                Toggle("增强识别", isOn: enhancedRecognition)
                 if enhancedRecognition.wrappedValue {
                     Picker("模型", selection: $qwen3ModelID) {
                         ForEach(Qwen3ModelChoice.allCases) { choice in
@@ -100,16 +101,18 @@ private struct VoiceSettingsTab: View {
                     modelDiskRow
                 }
             } footer: {
-                Text("中英混说识别显著更准，模型完全在本机运行，首次开启需下载。关闭则使用 macOS 系统识别，零下载。")
+                Text("中英混说更准，首次开启需下载模型。")
             }
-            Section {
-                Picker("蓝牙耳机收音", selection: micStrategy) {
-                    ForEach(BluetoothMicStrategy.allCases) { choice in
-                        Text(choice.displayName).tag(choice)
+            if bluetoothInput {
+                Section {
+                    Picker("麦克风", selection: micStrategy) {
+                        ForEach(BluetoothMicStrategy.allCases) { choice in
+                            Text(choice.displayName).tag(choice)
+                        }
                     }
+                } footer: {
+                    Text("耳机麦启动约 1 秒；内置麦克风即按即录。")
                 }
-            } footer: {
-                Text("蓝牙耳机麦克风每次激活约需 1 秒并伴随提示音，录音期间耳机处于通话模式（音质下降、有底噪），录完立即恢复。「Mac 内置麦克风」则即按即录、完全不占用耳机。未连蓝牙耳机时本设置无效。")
             }
             Section {
                 Picker("输出风格", selection: $refineStyle) {
@@ -117,11 +120,10 @@ private struct VoiceSettingsTab: View {
                         Text(style.displayName).tag(style.rawValue)
                     }
                 }
-            } footer: {
-                Text("「清爽」和「书面」由 AI 精修完成，需配置「AI 服务」；未配置时直接输出识别原文。")
             }
         }
         .formStyle(.grouped)
+        .onAppear { bluetoothInput = AudioRecorder.defaultInputIsBluetoothHeadset }
     }
 
     private func attentionRow(_ message: String, buttonTitle: String, action: @escaping () -> Void) -> some View {
@@ -178,8 +180,6 @@ private struct AboutTab: View {
                         UpdaterController.shared.checkForUpdates()
                     }
                 }
-            } footer: {
-                Text("Aime 会定期自动检查更新，发现新版本时提示安装。")
             }
         }
         .formStyle(.grouped)
@@ -192,7 +192,6 @@ private struct AIServiceTab: View {
     @AppStorage(SettingsKey.apiBaseURL) private var apiBaseURL = "https://api.deepseek.com/v1"
     @AppStorage(SettingsKey.apiModel) private var apiModel = "deepseek-v4-flash"
     @AppStorage(SettingsKey.apiKey) private var apiKey = ""
-    @AppStorage(SettingsKey.contextEnabled) private var contextEnabled = true
 
     private enum APIPreset: String, CaseIterable, Identifiable {
         case deepseek, openai, custom
@@ -253,12 +252,7 @@ private struct AIServiceTab: View {
                 TextField("模型", text: $apiModel, prompt: Text("deepseek-v4-flash"))
                 SecureField("API Key", text: $apiKey)
             } footer: {
-                Text("语音精修与拼音整句共用（OpenAI 兼容接口）。API Key 留空则一切功能纯本地运行，不发出任何网络请求；配置后也只发送转写文本与拼音分析，永不发送音频。")
-            }
-            Section {
-                Toggle("读取光标前文本辅助纠错", isOn: $contextEnabled)
-            } footer: {
-                Text("仅在开始输入的瞬间读取一次，用于识别偏置与纠错；只会随精修请求发送到上面配置的服务。")
+                Text("留空即纯本地运行；只发送文本，永不发送音频。")
             }
         }
         .formStyle(.grouped)

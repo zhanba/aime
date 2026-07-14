@@ -1,4 +1,5 @@
 import AimePinyin
+import AimeUI
 import AimeXPC
 import Cocoa
 import InputMethodKit
@@ -64,6 +65,44 @@ class AimeInputController: IMKInputController {
     private static let daemonClient = DaemonClient()
     private static var daemonAvailable = false
 
+    // 语音精修（与 app 全局热键路径行为一致：松开后先精修再入组合区）
+    // pending 期间原文以点线段显示；任何按键立即取消精修、用原文继续，不阻塞输入
+    private var refinePendingText = ""
+    private var refineTask: Task<Void, Never>?
+
+    // 语音浮层：与 app 全局热键路径共用同一套 overlay UI（录音电平/转写/精修/完成反馈）
+    private static let voiceOverlayModel = VoiceOverlayModel()
+    private static let voiceOverlay = VoiceOverlayController()
+    /// 递增作废挂起的自动收起任务（新状态出现时旧 flash 不得再收起浮层）
+    private static var overlayFlashID = 0
+
+    private func showVoiceOverlay(_ phase: VoicePhase) {
+        Self.overlayFlashID += 1
+        Self.voiceOverlayModel.phase = phase
+        Self.voiceOverlay.show(model: Self.voiceOverlayModel)
+    }
+
+    /// done/failed 短暂停留后自动收起
+    private func flashVoiceOverlay(_ phase: VoicePhase, text: String = "", refineSkipped: Bool = false) {
+        Self.voiceOverlayModel.finalText = text
+        Self.voiceOverlayModel.refineSkipped = refineSkipped
+        showVoiceOverlay(phase)
+        let id = Self.overlayFlashID
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            guard Self.overlayFlashID == id else { return }
+            Self.dismissVoiceOverlay()
+        }
+    }
+
+    private static func dismissVoiceOverlay() {
+        overlayFlashID += 1
+        voiceOverlayModel.phase = .idle
+        voiceOverlayModel.audioLevel = 0
+        voiceOverlayModel.usedContext = false
+        voiceOverlay.hide()
+    }
+
     // 翻译态（Tab）：翻译是组合区的一次可逆预览变换，源中文始终保留
     private enum TranslationPhase { case none, pending, shown }
     private var translationPhase: TranslationPhase = .none
@@ -108,7 +147,9 @@ class AimeInputController: IMKInputController {
         if voiceRecording {
             Self.daemonClient.cancelSession()
             voiceRecording = false
+            Self.dismissVoiceOverlay()
         }
+        settleRefineNow()
         if !confirmedText.isEmpty || !rawBuffer.isEmpty {
             commitFinal(confirmedText + rawBuffer)
         }
@@ -147,6 +188,9 @@ class AimeInputController: IMKInputController {
             }
             return true
         }
+
+        // 精修等待中：任何按键立即用原文继续，随后照常处理该键
+        settleRefineNow()
 
         if event.modifierFlags.contains(.command) || event.modifierFlags.contains(.control) {
             if isComposing { commitFinal(confirmedText + rawBuffer) }
@@ -267,6 +311,7 @@ class AimeInputController: IMKInputController {
             return
         }
         clearTranslation() // 翻译态中按下语音键：回到中文组合态再录音
+        settleRefineNow() // 上一段还在精修：原文先入组合区再录新段
         voiceRecording = true
         voiceHandledLast = true
         voiceLiveText = ""
@@ -287,6 +332,7 @@ class AimeInputController: IMKInputController {
             contextHint: contextHint.isEmpty ? nil : String(contextHint.suffix(300)),
             bluetoothMicStrategy: BluetoothMicStrategy(rawValue: asrConfig.bluetoothMicStrategyRaw)
         )
+        showVoiceOverlay(.recording)
         Self.daemonClient.onUpdate = { [weak self] text in
             DispatchQueue.main.async {
                 guard let self, self.voiceRecording else { return }
@@ -294,12 +340,17 @@ class AimeInputController: IMKInputController {
                 self.updateMarkedText()
             }
         }
-        Self.daemonClient.onLevel = nil
+        Self.daemonClient.onLevel = { level in
+            DispatchQueue.main.async {
+                Self.voiceOverlayModel.audioLevel = level
+            }
+        }
         Task { @MainActor in
             let json = (try? JSONEncoder().encode(config)) ?? Data()
             if let error = await Self.daemonClient.startSession(configJSON: json) {
                 NSLog("aime-ime 语音启动失败: \(error)")
                 self.voiceRecording = false
+                self.flashVoiceOverlay(.failed("语音启动失败：\(error)"))
             }
             self.updateMarkedText()
         }
@@ -308,15 +359,17 @@ class AimeInputController: IMKInputController {
     private func voiceUp() {
         guard voiceRecording else { return }
         voiceRecording = false
+        showVoiceOverlay(.transcribing)
         Task { @MainActor in
             let result = await Self.daemonClient.finishSession()
-            guard case .success(let asr) = result else {
-                self.voiceLiveText = ""
-                self.updateMarkedText()
-                return
-            }
             self.voiceLiveText = ""
-            self.integrateVoiceResult(asr.text)
+            switch result {
+            case .success(let asr):
+                self.integrateVoiceResult(asr.text)
+            case .failure(let error):
+                self.updateMarkedText()
+                self.flashVoiceOverlay(.failed("转写失败：\(error.localizedDescription)"))
+            }
         }
     }
 
@@ -324,6 +377,7 @@ class AimeInputController: IMKInputController {
         voiceRecording = false
         voiceLiveText = ""
         Self.daemonClient.cancelSession()
+        Self.dismissVoiceOverlay()
         updateMarkedText()
     }
 
@@ -334,6 +388,7 @@ class AimeInputController: IMKInputController {
             .trimmingCharacters(in: CharacterSet(charactersIn: "。，！？"))
         guard !trimmed.isEmpty else {
             updateMarkedText()
+            flashVoiceOverlay(.failed("没有听到内容"))
             return
         }
         if !rawBuffer.isEmpty, let segments = engineResult?.segments {
@@ -345,6 +400,8 @@ class AimeInputController: IMKInputController {
                 llmVerdict = verdict
                 rebuildCandidates()
                 updateMarkedText()
+                // 成功反馈就是组合区文本本身，浮层安静收起；只有异常才停留提示
+                Self.dismissVoiceOverlay()
                 return
             }
         }
@@ -353,10 +410,69 @@ class AimeInputController: IMKInputController {
             confirmedStack.append(ConfirmedSegment(text: currentPreview, keys: rawBuffer, source: .pinyin))
             clearActiveBuffer()
         }
-        confirmedStack.append(ConfirmedSegment(text: trimmed, keys: nil, source: .voice))
-        learnVoice(trimmed)
+        // 与 app 热键路径一致：配置了 AI 服务则按「输出风格」精修后再入组合区
+        let config = SharedConfig.loadLLMConfig()
+        if !config.apiKey.isEmpty, !SharedConfig.pureLocalMode, !clientBlocked {
+            startVoiceRefine(trimmed, config: config)
+        } else {
+            appendVoiceSegment(trimmed)
+            flashVoiceOverlay(.done, text: trimmed, refineSkipped: true)
+        }
+    }
+
+    /// 语音段入组合区（精修完成、失败回退或未配置时调用）
+    private func appendVoiceSegment(_ text: String) {
+        confirmedStack.append(ConfirmedSegment(text: text, keys: nil, source: .voice))
+        learnVoice(text)
         rebuildCandidates()
         updateMarkedText()
+    }
+
+    private func startVoiceRefine(_ raw: String, config: PinyinLLMConfig) {
+        refinePendingText = raw
+        rebuildCandidates()
+        updateMarkedText()
+        let context = (contextBeforeCursor() ?? "") + confirmedText
+        Self.voiceOverlayModel.usedContext = !context.isEmpty
+        showVoiceOverlay(.refining)
+        refineTask = Task { @MainActor [weak self] in
+            var refined: String?
+            do {
+                refined = try await VoiceRefiner().refine(
+                    transcript: raw,
+                    appName: nil,
+                    textBeforeCursor: context.isEmpty ? nil : String(context.suffix(200)),
+                    style: SharedConfig.refineStyle,
+                    config: config
+                )
+            } catch {
+                if !(error is CancellationError) { NSLog("aime-ime 语音精修失败: \(error)") }
+            }
+            guard let self, !Task.isCancelled, self.refinePendingText == raw else { return }
+            self.refinePendingText = ""
+            self.refineTask = nil
+            let cleaned = (refined ?? raw)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "。，！？"))
+            let final = cleaned.isEmpty ? raw : cleaned
+            self.appendVoiceSegment(final)
+            if refined == nil {
+                self.flashVoiceOverlay(.done, text: final, refineSkipped: true)
+            } else {
+                Self.dismissVoiceOverlay()
+            }
+        }
+    }
+
+    /// 精修等待中被打断（按键/再次录音/失活）：取消请求，原文立即入组合区
+    private func settleRefineNow() {
+        guard !refinePendingText.isEmpty else { return }
+        refineTask?.cancel()
+        refineTask = nil
+        let raw = refinePendingText
+        refinePendingText = ""
+        Self.dismissVoiceOverlay()
+        appendVoiceSegment(raw)
     }
 
     // MARK: - 翻译（v1，Tab 触发）
@@ -477,7 +593,7 @@ class AimeInputController: IMKInputController {
     // MARK: - 状态
 
     private var isComposing: Bool {
-        !rawBuffer.isEmpty || !confirmedStack.isEmpty
+        !rawBuffer.isEmpty || !confirmedStack.isEmpty || !refinePendingText.isEmpty
     }
 
     private var llmFresh: Bool {
@@ -508,6 +624,10 @@ class AimeInputController: IMKInputController {
         page = 0
         voiceRecording = false
         voiceLiveText = ""
+        refineTask?.cancel()
+        refineTask = nil
+        refinePendingText = ""
+        Self.dismissVoiceOverlay()
         Self.bar.hide()
         client()?.setMarkedText(
             "", selectionRange: NSRange(location: 0, length: 0), replacementRange: Self.replacementRange
@@ -747,6 +867,13 @@ class AimeInputController: IMKInputController {
         if voiceRecording {
             let live = voiceLiveText.isEmpty ? "🎤…" : voiceLiveText
             attributed.append(NSAttributedString(string: live, attributes: [
+                .underlineStyle: NSUnderlineStyle.patternDot.union(.single).rawValue,
+                .markedClauseSegment: 2,
+            ]))
+        }
+        if !refinePendingText.isEmpty {
+            // 精修等待中：原文以点线段展示，完成后被精修文本（粗下划线确认段）替换
+            attributed.append(NSAttributedString(string: refinePendingText, attributes: [
                 .underlineStyle: NSUnderlineStyle.patternDot.union(.single).rawValue,
                 .markedClauseSegment: 2,
             ]))

@@ -22,10 +22,10 @@ struct PinyinSettingsTab: View {
             } header: {
                 Text("词库")
             } footer: {
-                Text("本地整句与词候选的数据来源（开源项目白霜拼音 rime-frost），缺失时启动自动下载，约 12MB。")
+                Text("来自开源词库白霜拼音，缺失时自动下载（约 12MB）。")
             }
 
-            Section("模糊音（按你的口音习惯勾选）") {
+            Section("模糊音") {
                 let columns = [GridItem(.adaptive(minimum: 96), spacing: 8)]
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
                     ForEach(FuzzyRule.all) { rule in
@@ -44,6 +44,8 @@ struct PinyinSettingsTab: View {
                     }
                 }
             }
+
+            DictionarySections()
         }
         .formStyle(.grouped)
     }
