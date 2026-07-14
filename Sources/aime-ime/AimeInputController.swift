@@ -284,7 +284,8 @@ class AimeInputController: IMKInputController {
             backend: ASRBackendID(rawValue: asrConfig.backendRaw) ?? .qwen3ASR,
             localeID: asrConfig.localeID,
             qwen3ModelID: asrConfig.qwen3ModelID,
-            contextHint: contextHint.isEmpty ? nil : String(contextHint.suffix(300))
+            contextHint: contextHint.isEmpty ? nil : String(contextHint.suffix(300)),
+            bluetoothMicStrategy: BluetoothMicStrategy(rawValue: asrConfig.bluetoothMicStrategyRaw)
         )
         Self.daemonClient.onUpdate = { [weak self] text in
             DispatchQueue.main.async {

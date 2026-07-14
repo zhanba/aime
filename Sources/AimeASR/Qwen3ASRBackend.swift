@@ -137,6 +137,7 @@ public final class Qwen3ASRSession: ASRSession {
     public func start(config: ASRSessionConfig) async throws {
         language = Self.languageHint(for: config.localeID)
         contextHint = config.contextHint
+        recorder.bluetoothMicStrategy = config.bluetoothMicStrategy ?? .quickRelease
         recorder.onBuffer = { [weak self] buffer in self?.feed(buffer) }
         recorder.onLevel = { [weak self] level in
             Task { @MainActor in self?.onLevel?(level) }
@@ -157,18 +158,22 @@ public final class Qwen3ASRSession: ASRSession {
         partialTask?.cancel()
         let snapshot = snapshotSamples()
         guard snapshot.count >= Self.minSampleCount else {
+            DiagLog.log("定稿：样本不足 \(snapshot.count)，返回空")
             return ASRResult(text: "", segments: nil)
         }
         // W3：VAD 前置——掐首尾静音，纯静音直接返回空（不喂给 LLM ASR，杜绝幻觉）
         guard let trimmed = await inference.vadTrim(samples: snapshot),
               trimmed.count >= Self.minSampleCount
         else {
+            DiagLog.log("定稿：VAD 判定纯静音（样本=\(snapshot.count)），返回空")
             return ASRResult(text: "", segments: nil)
         }
         let text = try await inference.transcribe(
             samples: trimmed, language: language, context: contextHint
         )
-        return ASRResult(text: Self.sanitize(text, sampleCount: trimmed.count), segments: nil)
+        let cleaned = Self.sanitize(text, sampleCount: trimmed.count)
+        DiagLog.log("定稿：样本=\(snapshot.count) VAD后=\(trimmed.count) 原文\(text.count)字 清理后\(cleaned.count)字")
+        return ASRResult(text: cleaned, segments: nil)
     }
 
     public func cancel() async {

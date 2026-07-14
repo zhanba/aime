@@ -44,12 +44,47 @@ public struct ASRSessionConfig: Codable, Sendable {
     /// 识别偏置上下文（光标前文本/用户词库）。支持的后端（Qwen3-ASR）注入模型
     /// system 槽位，不支持的后端忽略。
     public var contextHint: String?
+    /// 蓝牙耳机收音策略。Optional 以兼容旧版 JSON（缺键解码为 nil），
+    /// 读取方按 .quickRelease 处理。
+    public var bluetoothMicStrategy: BluetoothMicStrategy?
 
-    public init(backend: ASRBackendID, localeID: String, qwen3ModelID: String, contextHint: String? = nil) {
+    public init(
+        backend: ASRBackendID,
+        localeID: String,
+        qwen3ModelID: String,
+        contextHint: String? = nil,
+        bluetoothMicStrategy: BluetoothMicStrategy? = nil
+    ) {
         self.backend = backend
         self.localeID = localeID
         self.qwen3ModelID = qwen3ModelID
         self.contextHint = contextHint
+        self.bluetoothMicStrategy = bluetoothMicStrategy
+    }
+}
+
+/// 默认输入是蓝牙耳机时的收音策略。蓝牙麦克风激活（A2DP→HFP）有提示音和
+/// 约 1 秒延迟，激活期间耳机处于通话模式（底噪明显），两种策略取舍。
+public enum BluetoothMicStrategy: String, CaseIterable, Identifiable, Codable, Sendable {
+    /// 用耳机麦克风，录完立即归还（默认）：底噪只在录音期间存在
+    case quickRelease
+    /// 蓝牙时改用 Mac 内置麦克风：无延迟无提示音，不占用耳机
+    case builtinMic
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .quickRelease: return "耳机麦克风（录完立即归还耳机）"
+        case .builtinMic: return "Mac 内置麦克风"
+        }
+    }
+
+    /// 容错解码：历史/未知取值（如已下线的 alwaysOn）回落到默认策略，
+    /// 避免新旧进程混跑时整个配置解码失败。
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = BluetoothMicStrategy(rawValue: raw) ?? .quickRelease
     }
 }
 

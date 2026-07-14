@@ -20,17 +20,24 @@ public enum SharedConfig {
     }
 
     /// IME 进程发起语音会话所需的 ASR 配置（app 设置变更时镜像）。
+    /// 蓝牙收音策略以 rawValue 传递（AimePinyin 不依赖 AimeXPC 的枚举类型）。
     public struct SharedASRConfig {
         public var backendRaw: String
         public var qwen3ModelID: String
         public var localeID: String
+        public var bluetoothMicStrategyRaw: String
     }
 
-    public static func mirrorASRFromApp(backendRaw: String, qwen3ModelID: String, localeID: String) {
+    public static func mirrorASRFromApp(
+        backendRaw: String, qwen3ModelID: String, localeID: String, bluetoothMicStrategyRaw: String
+    ) {
         let d = defaults
         if d.string(forKey: "asrBackend") != backendRaw { d.set(backendRaw, forKey: "asrBackend") }
         if d.string(forKey: "qwen3ModelID") != qwen3ModelID { d.set(qwen3ModelID, forKey: "qwen3ModelID") }
         if d.string(forKey: "localeID") != localeID { d.set(localeID, forKey: "localeID") }
+        if d.string(forKey: "bluetoothMicStrategy") != bluetoothMicStrategyRaw {
+            d.set(bluetoothMicStrategyRaw, forKey: "bluetoothMicStrategy")
+        }
     }
 
     // MARK: - 组合区显示
@@ -77,7 +84,8 @@ public enum SharedConfig {
         return SharedASRConfig(
             backendRaw: d.string(forKey: "asrBackend") ?? "qwen3ASR",
             qwen3ModelID: d.string(forKey: "qwen3ModelID") ?? "aufklarer/Qwen3-ASR-0.6B-MLX-4bit",
-            localeID: d.string(forKey: "localeID") ?? "zh_CN"
+            localeID: d.string(forKey: "localeID") ?? "zh_CN",
+            bluetoothMicStrategyRaw: d.string(forKey: "bluetoothMicStrategy") ?? ""
         )
     }
 

@@ -74,6 +74,7 @@ public final class SpeechAnalyzerSession: ASRSession {
         }
 
         // 先启动录音：缓冲会排队等待 analyzer 就绪
+        recorder.bluetoothMicStrategy = config.bluetoothMicStrategy ?? .quickRelease
         recorder.onBuffer = { [weak self] buffer in self?.feed(buffer) }
         recorder.onLevel = { [weak self] level in
             Task { @MainActor in self?.onLevel?(level) }
@@ -148,6 +149,7 @@ public final class SpeechAnalyzerSession: ASRSession {
         let text = withState {
             (finalizedText + volatileText).trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        DiagLog.log("定稿：文本\(text.count)字")
         return ASRResult(text: text, segments: nil)
     }
 

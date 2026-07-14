@@ -13,6 +13,7 @@ enum SettingsKey {
     static let hotkey = "hotkey"
     static let refineStyle = "refineStyle"
     static let contextEnabled = "contextEnabled"
+    static let bluetoothMicStrategy = "bluetoothMicStrategy"
 }
 
 enum HotkeyChoice: String, CaseIterable, Identifiable {
@@ -82,6 +83,7 @@ struct Settings {
     var hotkey: HotkeyChoice
     var refineStyle: RefineStyle
     var contextEnabled: Bool
+    var bluetoothMicStrategy: BluetoothMicStrategy
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -94,6 +96,7 @@ struct Settings {
             SettingsKey.hotkey: HotkeyChoice.rightOption.rawValue,
             SettingsKey.refineStyle: RefineStyle.clean.rawValue,
             SettingsKey.contextEnabled: true,
+            SettingsKey.bluetoothMicStrategy: BluetoothMicStrategy.quickRelease.rawValue,
         ])
     }
 
@@ -108,7 +111,10 @@ struct Settings {
             apiKey: d.string(forKey: SettingsKey.apiKey) ?? "",
             hotkey: HotkeyChoice(rawValue: d.string(forKey: SettingsKey.hotkey) ?? "") ?? .rightOption,
             refineStyle: RefineStyle(rawValue: d.string(forKey: SettingsKey.refineStyle) ?? "") ?? .clean,
-            contextEnabled: d.bool(forKey: SettingsKey.contextEnabled)
+            contextEnabled: d.bool(forKey: SettingsKey.contextEnabled),
+            bluetoothMicStrategy: BluetoothMicStrategy(
+                rawValue: d.string(forKey: SettingsKey.bluetoothMicStrategy) ?? ""
+            ) ?? .quickRelease
         )
     }
 }

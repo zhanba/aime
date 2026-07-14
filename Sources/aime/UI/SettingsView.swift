@@ -15,6 +15,8 @@ struct SettingsView: View {
                 .tabItem { Label("教它", systemImage: "book") }
             AIServiceTab()
                 .tabItem { Label("AI 服务", systemImage: "sparkles") }
+            AboutTab()
+                .tabItem { Label("关于", systemImage: "info.circle") }
         }
         .frame(width: 560)
         .fixedSize(horizontal: false, vertical: true)
@@ -31,6 +33,7 @@ private struct VoiceSettingsTab: View {
     @AppStorage(SettingsKey.qwen3ModelID) private var qwen3ModelID = Qwen3ModelChoice.small4bit.rawValue
     @AppStorage(SettingsKey.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
     @AppStorage(SettingsKey.refineStyle) private var refineStyle = RefineStyle.clean.rawValue
+    @AppStorage(SettingsKey.bluetoothMicStrategy) private var bluetoothMicStrategy = BluetoothMicStrategy.quickRelease.rawValue
     @ObservedObject private var state = AppState.shared
     @ObservedObject private var daemon = AppState.shared.daemon
 
@@ -43,6 +46,14 @@ private struct VoiceSettingsTab: View {
 
     private var needsAttention: Bool {
         !state.micGranted || !state.accessibilityGranted || daemon.approvalRequired
+    }
+
+    /// 存储值容错：历史/未知取值（如已下线的常驻模式）显示为默认策略
+    private var micStrategy: Binding<BluetoothMicStrategy> {
+        Binding(
+            get: { BluetoothMicStrategy(rawValue: bluetoothMicStrategy) ?? .quickRelease },
+            set: { bluetoothMicStrategy = $0.rawValue }
+        )
     }
 
     var body: some View {
@@ -92,6 +103,15 @@ private struct VoiceSettingsTab: View {
                 Text("中英混说识别显著更准，模型完全在本机运行，首次开启需下载。关闭则使用 macOS 系统识别，零下载。")
             }
             Section {
+                Picker("蓝牙耳机收音", selection: micStrategy) {
+                    ForEach(BluetoothMicStrategy.allCases) { choice in
+                        Text(choice.displayName).tag(choice)
+                    }
+                }
+            } footer: {
+                Text("蓝牙耳机麦克风每次激活约需 1 秒并伴随提示音，录音期间耳机处于通话模式（音质下降、有底噪），录完立即恢复。「Mac 内置麦克风」则即按即录、完全不占用耳机。未连蓝牙耳机时本设置无效。")
+            }
+            Section {
                 Picker("输出风格", selection: $refineStyle) {
                     ForEach(RefineStyle.allCases) { style in
                         Text(style.displayName).tag(style.rawValue)
@@ -134,6 +154,35 @@ private struct VoiceSettingsTab: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - 关于
+
+private struct AboutTab: View {
+    /// 裸跑（swift run，非 bundle）时没有版本字段，标开发版
+    private var versionText: String {
+        guard let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String else {
+            return "开发版"
+        }
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+        return build.map { "\(short) (\($0))" } ?? short
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("版本", value: versionText)
+                LabeledContent("软件更新") {
+                    Button("检查更新…") {
+                        UpdaterController.shared.checkForUpdates()
+                    }
+                }
+            } footer: {
+                Text("Aime 会定期自动检查更新，发现新版本时提示安装。")
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 

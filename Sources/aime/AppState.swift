@@ -72,6 +72,8 @@ final class AppState: ObservableObject {
         daemon.bootstrap()
         // 词库是本地整句/词候选的前提，缺失时自动补齐（约 12MB），不等用户去设置页点
         LexiconInstaller.shared.installIfNeeded()
+        // 输入法副本随主程序更新自动跟进（Sparkle 只更新 aime.app）
+        IMEInstaller.autoUpdateIfNeeded()
 
         Task {
             micGranted = await AudioRecorder.requestPermission()
@@ -98,7 +100,8 @@ final class AppState: ObservableObject {
         SharedConfig.mirrorASRFromApp(
             backendRaw: settings.asrBackend.rawValue,
             qwen3ModelID: settings.qwen3ModelID,
-            localeID: Settings.recognitionLocaleID
+            localeID: Settings.recognitionLocaleID,
+            bluetoothMicStrategyRaw: settings.bluetoothMicStrategy.rawValue
         )
         // 纯本地模式/屏蔽应用已从产品中移除（API Key 留空即纯本地），清掉历史遗留值
         SharedConfig.mirrorPrivacyFromApp(blockedApps: [], pureLocalMode: false)
@@ -135,7 +138,8 @@ final class AppState: ObservableObject {
             backend: settings.asrBackend,
             localeID: Settings.recognitionLocaleID,
             qwen3ModelID: settings.qwen3ModelID,
-            contextHint: contextHint
+            contextHint: contextHint,
+            bluetoothMicStrategy: settings.bluetoothMicStrategy
         )
     }
 
