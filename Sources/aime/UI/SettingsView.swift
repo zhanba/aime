@@ -32,7 +32,6 @@ private struct VoiceSettingsTab: View {
     @AppStorage(SettingsKey.asrBackend) private var asrBackend = ASRBackendID.speechAnalyzer.rawValue
     @AppStorage(SettingsKey.qwen3ModelID) private var qwen3ModelID = Qwen3ModelChoice.small4bit.rawValue
     @AppStorage(SettingsKey.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
-    @AppStorage(SettingsKey.refineStyle) private var refineStyle = RefineStyle.clean.rawValue
     @AppStorage(SettingsKey.bluetoothMicStrategy) private var bluetoothMicStrategy = BluetoothMicStrategy.quickRelease.rawValue
     @AppStorage(SettingsKey.startChimeAlways) private var startChimeAlways = false
     @ObservedObject private var state = AppState.shared
@@ -122,13 +121,6 @@ private struct VoiceSettingsTab: View {
                     )
                 }
             }
-            Section {
-                Picker("输出风格", selection: $refineStyle) {
-                    ForEach(RefineStyle.allCases) { style in
-                        Text(style.displayName).tag(style.rawValue)
-                    }
-                }
-            }
         }
         .formStyle(.grouped)
         .onAppear { bluetoothInput = AudioRecorder.defaultInputIsBluetoothHeadset }
@@ -200,6 +192,32 @@ private struct AIServiceTab: View {
     @AppStorage(SettingsKey.apiBaseURL) private var apiBaseURL = "https://api.deepseek.com/v1"
     @AppStorage(SettingsKey.apiModel) private var apiModel = "deepseek-v4-flash"
     @AppStorage(SettingsKey.apiKey) private var apiKey = ""
+    @AppStorage(SettingsKey.refineStyle) private var refineStyle = RefineStyle.clean.rawValue
+    @AppStorage(SettingsKey.customPromptRefine) private var customPromptRefine = ""
+    @AppStorage(SettingsKey.customPromptRefineDraft) private var customPromptRefineDraft = ""
+    @AppStorage(SettingsKey.customPromptPinyin) private var customPromptPinyin = ""
+    @AppStorage(SettingsKey.customPromptTranslate) private var customPromptTranslate = ""
+    @State private var promptTarget = PromptTarget.refine
+
+    /// 语音精修的 prompt 模式：三个内置风格 + 「自定义」（有自定义文本时才出现）
+    private enum RefinePromptMode: Hashable {
+        case style(RefineStyle)
+        case custom
+    }
+
+    private enum PromptTarget: String, CaseIterable, Identifiable {
+        case refine, pinyin, translate
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .refine: return "语音精修"
+            case .pinyin: return "拼音转换"
+            case .translate: return "中译英"
+            }
+        }
+    }
 
     private enum APIPreset: String, CaseIterable, Identifiable {
         case deepseek, openai, custom
@@ -262,7 +280,118 @@ private struct AIServiceTab: View {
             } footer: {
                 Text("留空即纯本地运行；只发送文本，永不发送音频。")
             }
+            Section {
+                Picker("功能", selection: $promptTarget) {
+                    ForEach(PromptTarget.allCases) { target in
+                        Text(target.displayName).tag(target)
+                    }
+                }
+                .pickerStyle(.segmented)
+                if promptTarget == .refine {
+                    Picker("输出风格", selection: refineMode) {
+                        ForEach(RefineStyle.allCases) { style in
+                            Text(style.displayName).tag(RefinePromptMode.style(style))
+                        }
+                        if !customPromptRefine.isEmpty || !customPromptRefineDraft.isEmpty {
+                            Text("自定义").tag(RefinePromptMode.custom)
+                        }
+                    }
+                }
+                TextEditor(text: currentPrompt)
+                    .font(.callout)
+                    .frame(height: 140)
+                    .id(editorIdentity) // 内容来源变化时重建编辑器，防止旧文本经复用的 NSTextView 写进新目标
+                if promptTarget != .refine, isCustomized {
+                    HStack {
+                        Text("已自定义")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("恢复内置") { storedPrompt.wrappedValue = "" }
+                    }
+                }
+            } header: {
+                Text("Prompt")
+            } footer: {
+                Text(
+                    promptTarget == .refine
+                        ? "直接编辑即成为「自定义」；切回任一风格时自定义内容保留，可随时切换。光标前文等上下文始终自动附加。"
+                        : "可直接修改。光标前文、用户词库等上下文仍会自动附加。"
+                )
+            }
         }
         .formStyle(.grouped)
+    }
+
+    /// 精修 prompt 模式：选中风格＝清掉自定义（文本进草稿）；选中「自定义」＝从草稿恢复。
+    /// 切换全程无损，所以不需要确认框。
+    private var refineMode: Binding<RefinePromptMode> {
+        Binding(
+            get: {
+                customPromptRefine.isEmpty
+                    ? .style(RefineStyle(rawValue: refineStyle) ?? .clean)
+                    : .custom
+            },
+            set: { mode in
+                switch mode {
+                case .style(let style):
+                    if !customPromptRefine.isEmpty {
+                        customPromptRefineDraft = customPromptRefine
+                        customPromptRefine = ""
+                    }
+                    refineStyle = style.rawValue
+                case .custom:
+                    if customPromptRefine.isEmpty, !customPromptRefineDraft.isEmpty {
+                        customPromptRefine = customPromptRefineDraft
+                    }
+                }
+            }
+        )
+    }
+
+    /// 编辑器身份跟随内容来源：功能、精修风格、内置/自定义。任一变化都重建，
+    /// 避免复用的 NSTextView 把旧文本写回新来源（表现为切个风格就莫名变成自定义）。
+    private var editorIdentity: String {
+        "\(promptTarget.rawValue)-\(refineStyle)-\(customPromptRefine.isEmpty)"
+    }
+
+    /// 内容与内置一致就不算自定义（不只看非空）
+    private var isCustomized: Bool {
+        let stored = storedPrompt.wrappedValue
+        return !stored.isEmpty && stored != defaultPrompt
+    }
+
+    /// 存储值：空 = 未自定义（引擎用内置）
+    private var storedPrompt: Binding<String> {
+        switch promptTarget {
+        case .refine: return $customPromptRefine
+        case .pinyin: return $customPromptPinyin
+        case .translate: return $customPromptTranslate
+        }
+    }
+
+    /// 编辑框显示生效中的 prompt：未自定义时显示内置；
+    /// 改回与内置一致（或清空）即恢复未自定义，语音精修重新跟随输出风格
+    private var currentPrompt: Binding<String> {
+        let stored = storedPrompt
+        let fallback = defaultPrompt
+        return Binding(
+            get: { stored.wrappedValue.isEmpty ? fallback : stored.wrappedValue },
+            set: { edited in
+                let trimmed = edited.trimmingCharacters(in: .whitespacesAndNewlines)
+                stored.wrappedValue = (edited == fallback || trimmed.isEmpty) ? "" : edited
+            }
+        )
+    }
+
+    private var defaultPrompt: String {
+        switch promptTarget {
+        case .refine:
+            return VoiceRefiner.defaultInstructions(style: RefineStyle(rawValue: refineStyle) ?? .clean)
+        case .pinyin:
+            return PinyinPromptBuilder.defaultInstructions()
+        case .translate:
+            return TranslatorPromptBuilder.defaultInstructions()
+        }
     }
 }

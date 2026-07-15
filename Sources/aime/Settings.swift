@@ -14,6 +14,11 @@ enum SettingsKey {
     static let refineStyle = "refineStyle"
     static let bluetoothMicStrategy = "bluetoothMicStrategy"
     static let startChimeAlways = "startChimeAlways"
+    static let customPromptRefine = "customPromptRefine"
+    /// 从「自定义」切回内置风格时的暂存，仅设置页 UI 使用，引擎与 IME 不读
+    static let customPromptRefineDraft = "customPromptRefineDraft"
+    static let customPromptPinyin = "customPromptPinyin"
+    static let customPromptTranslate = "customPromptTranslate"
 }
 
 enum HotkeyChoice: String, CaseIterable, Identifiable {
@@ -66,6 +71,10 @@ struct Settings {
     /// 蓝牙输入时也播放开始提示音（默认关：多数耳机切 HFP 自带提示音，叠播更烦；
     /// 切换静默的耳机开这个兜底）。非蓝牙输入始终播放，不受此项影响。
     var startChimeAlways: Bool
+    /// 自定义 LLM prompt（空 = 内置）
+    var customPromptRefine: String
+    var customPromptPinyin: String
+    var customPromptTranslate: String
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -79,7 +88,30 @@ struct Settings {
             SettingsKey.refineStyle: RefineStyle.clean.rawValue,
             SettingsKey.bluetoothMicStrategy: BluetoothMicStrategy.quickRelease.rawValue,
             SettingsKey.startChimeAlways: false,
+            SettingsKey.customPromptRefine: "",
+            SettingsKey.customPromptRefineDraft: "",
+            SettingsKey.customPromptPinyin: "",
+            SettingsKey.customPromptTranslate: "",
         ])
+    }
+
+    /// 存储的自定义 prompt 与内置一致就当没自定义（语音精修恢复跟随输出风格）。
+    /// 旧版设置页「填入内置」会把内置文本存为自定义，启动时清理一次。
+    static func normalizeCustomPrompts() {
+        let d = UserDefaults.standard
+        let refineDefaults = RefineStyle.allCases.map { VoiceRefiner.defaultInstructions(style: $0) }
+        if let stored = d.string(forKey: SettingsKey.customPromptRefine), refineDefaults.contains(stored) {
+            d.set("", forKey: SettingsKey.customPromptRefine)
+        }
+        if let draft = d.string(forKey: SettingsKey.customPromptRefineDraft), refineDefaults.contains(draft) {
+            d.set("", forKey: SettingsKey.customPromptRefineDraft)
+        }
+        if d.string(forKey: SettingsKey.customPromptPinyin) == PinyinPromptBuilder.defaultInstructions() {
+            d.set("", forKey: SettingsKey.customPromptPinyin)
+        }
+        if d.string(forKey: SettingsKey.customPromptTranslate) == TranslatorPromptBuilder.defaultInstructions() {
+            d.set("", forKey: SettingsKey.customPromptTranslate)
+        }
     }
 
     static func current() -> Settings {
@@ -96,7 +128,10 @@ struct Settings {
             bluetoothMicStrategy: BluetoothMicStrategy(
                 rawValue: d.string(forKey: SettingsKey.bluetoothMicStrategy) ?? ""
             ) ?? .quickRelease,
-            startChimeAlways: d.bool(forKey: SettingsKey.startChimeAlways)
+            startChimeAlways: d.bool(forKey: SettingsKey.startChimeAlways),
+            customPromptRefine: d.string(forKey: SettingsKey.customPromptRefine) ?? "",
+            customPromptPinyin: d.string(forKey: SettingsKey.customPromptPinyin) ?? "",
+            customPromptTranslate: d.string(forKey: SettingsKey.customPromptTranslate) ?? ""
         )
     }
 }

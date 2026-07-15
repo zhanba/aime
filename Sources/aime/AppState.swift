@@ -67,6 +67,7 @@ final class AppState: ObservableObject {
 
     func bootstrap() {
         Settings.registerDefaults()
+        Settings.normalizeCustomPrompts()
         accessibilityGranted = ContextCapture.ensureAccessibilityPermission(prompt: true)
 
         hotkey.onPressDown = { [weak self] in Task { @MainActor in self?.hotkeyPressed() } }
@@ -123,6 +124,11 @@ final class AppState: ObservableObject {
             startChimeAlways: settings.startChimeAlways
         )
         SharedConfig.mirrorRefineFromApp(refineStyleRaw: settings.refineStyle.rawValue)
+        SharedConfig.mirrorPromptsFromApp(
+            refine: settings.customPromptRefine,
+            pinyin: settings.customPromptPinyin,
+            translate: settings.customPromptTranslate
+        )
         // 纯本地模式/屏蔽应用已从产品中移除（API Key 留空即纯本地），清掉历史遗留值
         SharedConfig.mirrorPrivacyFromApp(blockedApps: [], pureLocalMode: false)
         // 组合区形态定死分词拼音（覆盖历史遗留的预览模式取值）
@@ -306,7 +312,8 @@ final class AppState: ObservableObject {
                                 apiBaseURL: settings.apiBaseURL,
                                 apiModel: settings.apiModel,
                                 apiKey: settings.apiKey,
-                                enabledFuzzyRuleIDs: []
+                                enabledFuzzyRuleIDs: [],
+                                customPromptRefine: settings.customPromptRefine
                             )
                         )
                     } catch {

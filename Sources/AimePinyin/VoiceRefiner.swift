@@ -38,9 +38,10 @@ public struct VoiceRefiner {
             throw PinyinError.notConfigured
         }
 
+        let deadline = Self.deadline(for: transcript)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 20
+        request.timeoutInterval = deadline
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
         let body: [String: Any] = [
@@ -49,14 +50,16 @@ public struct VoiceRefiner {
             "messages": [
                 [
                     "role": "system",
-                    "content": Self.systemPrompt(style: style, appName: appName, textBeforeCursor: textBeforeCursor),
+                    "content": Self.systemPrompt(style: style, appName: appName, textBeforeCursor: textBeforeCursor, custom: config.customPromptRefine),
                 ],
                 ["role": "user", "content": transcript],
             ],
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await Self.withDeadline(deadline) {
+            try await URLSession.shared.data(for: request)
+        }
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             throw PinyinError.httpError(http.statusCode)
         }
@@ -72,7 +75,32 @@ public struct VoiceRefiner {
         return refined
     }
 
-    public static func systemPrompt(style: RefineStyle, appName: String?, textBeforeCursor: String?) -> String {
+    /// 精修总时长上限：用户在盯着浮层等上屏，宁可回退原文也不久等。
+    /// 短句 8s 起步，长文按长度放宽（每 50 字 +1s），上限 15s。
+    static func deadline(for transcript: String) -> TimeInterval {
+        min(15, 8 + TimeInterval(transcript.count) / 50)
+    }
+
+    /// URLRequest.timeoutInterval 只是空闲超时（收到数据就重置），这里用竞速兜出总时长硬上限。
+    private static func withDeadline<T: Sendable>(
+        _ seconds: TimeInterval,
+        _ work: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await work() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw PinyinError.timeout
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
+    }
+
+    /// 内置指令部分（不含上下文），设置页「填入内置」也用它。
+    /// 自定义 prompt 会整体替换它，包括随「输出风格」变化的两条规则。
+    public static func defaultInstructions(style: RefineStyle) -> String {
         var lines: [String] = []
         lines.append("你是一个语音输入法的后处理引擎。用户通过语音说了一段话，语音识别的原始结果可能包含同音字/近音字错误、错误的英文术语识别、缺失或错误的标点、口语填充词。")
         lines.append("")
@@ -94,6 +122,11 @@ public struct VoiceRefiner {
         lines.append("- 不增加原话没有的信息，不遗漏信息")
         lines.append("- 中英文混合内容保持混合，英文术语保持英文原样")
         lines.append("- 只输出处理后的文本本身，不要任何解释、引号、markdown 或前缀")
+        return lines.joined(separator: "\n")
+    }
+
+    public static func systemPrompt(style: RefineStyle, appName: String?, textBeforeCursor: String?, custom: String? = nil) -> String {
+        var lines = [PinyinLLMConfig.effectiveCustom(custom) ?? defaultInstructions(style: style)]
 
         var contextLines: [String] = []
         if let appName, !appName.isEmpty {

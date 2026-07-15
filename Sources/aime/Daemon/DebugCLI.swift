@@ -15,6 +15,10 @@ enum DebugCLI {
             runPrepare()
             return
         }
+        if CommandLine.arguments.contains("--daemon-roundtrip") {
+            runRoundtrip()
+            return
+        }
         let reregister = CommandLine.arguments.contains("--daemon-reregister")
         guard reregister || CommandLine.arguments.contains("--daemon-status") else { return }
 
@@ -83,6 +87,46 @@ enum DebugCLI {
                 }
             } catch {
                 print("prepare: 编码失败 \(error)")
+            }
+            semaphore.signal()
+        }
+        semaphore.wait()
+        exit(0)
+    }
+
+    /// `--daemon-roundtrip`：不经 prepare 直接跑一次完整会话（录 2 秒 → finish），
+    /// 验证 daemon 端会话内模型自愈加载：全新 daemon 进程也应正常返回（静音则为空文本），
+    /// 而不是「语音模型尚未就绪」。
+    private static func runRoundtrip() {
+        let client = DaemonClient()
+        let settings = Settings.current()
+        let config = ASRSessionConfig(
+            backend: settings.asrBackend,
+            localeID: Settings.recognitionLocaleID,
+            qwen3ModelID: settings.qwen3ModelID,
+            bluetoothMicStrategy: settings.bluetoothMicStrategy
+        )
+        let semaphore = DispatchSemaphore(value: 0)
+        Task.detached {
+            do {
+                let json = try JSONEncoder().encode(config)
+                if let error = await client.startSession(configJSON: json) {
+                    print("startSession: 失败 \(error)")
+                    semaphore.signal()
+                    return
+                }
+                print("startSession: ok（录音 2 秒…）")
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let began = Date()
+                switch await client.finishSession() {
+                case .success(let result):
+                    let cost = Date().timeIntervalSince(began)
+                    print("finishSession: ok \(String(format: "%.2f", cost))s 文本=\"\(result.text)\"")
+                case .failure(let error):
+                    print("finishSession: 失败 \(error.localizedDescription)")
+                }
+            } catch {
+                print("roundtrip: 编码失败 \(error)")
             }
             semaphore.signal()
         }

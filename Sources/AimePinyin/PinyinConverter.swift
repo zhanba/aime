@@ -6,12 +6,30 @@ public struct PinyinLLMConfig: Codable, Sendable {
     public var apiModel: String
     public var apiKey: String
     public var enabledFuzzyRuleIDs: Set<String>
+    /// 自定义 system prompt（空 = 用内置）。只替换指令部分，光标前文/用户词库等上下文仍由代码附加。
+    public var customPromptRefine: String
+    public var customPromptPinyin: String
+    public var customPromptTranslate: String
 
-    public init(apiBaseURL: String, apiModel: String, apiKey: String, enabledFuzzyRuleIDs: Set<String>) {
+    public init(
+        apiBaseURL: String, apiModel: String, apiKey: String, enabledFuzzyRuleIDs: Set<String>,
+        customPromptRefine: String = "", customPromptPinyin: String = "", customPromptTranslate: String = ""
+    ) {
         self.apiBaseURL = apiBaseURL
         self.apiModel = apiModel
         self.apiKey = apiKey
         self.enabledFuzzyRuleIDs = enabledFuzzyRuleIDs
+        self.customPromptRefine = customPromptRefine
+        self.customPromptPinyin = customPromptPinyin
+        self.customPromptTranslate = customPromptTranslate
+    }
+
+    /// 空白视为未自定义
+    static func effectiveCustom(_ custom: String?) -> String? {
+        guard let trimmed = custom?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 }
 
@@ -62,7 +80,8 @@ public enum PinyinPromptBuilder {
         return parts.joined(separator: " | ")
     }
 
-    public static func systemPrompt(context: String?, userDictEntries: [String]) -> String {
+    /// 内置指令部分（不含上下文），设置页「填入内置」也用它
+    public static func defaultInstructions() -> String {
         var lines: [String] = []
         lines.append("你是拼音输入法的整句转换引擎。用户输入无声调拼音（可能混有英文单词、数字），你输出对应的中文整句。")
         lines.append("")
@@ -77,6 +96,11 @@ public enum PinyinPromptBuilder {
         lines.append("- 例外：切分中孤立的单字母，或音节与字母的组合，若拼起来是语境合理的英文单词（如 bu+g=bug、a+pp=app），应作为英文单词输出")
         lines.append("- 输出不加句末标点（用户自己打标点）")
         lines.append("- 只输出转换结果。第一行是首选；如果存在语义截然不同的第二种理解，第二行输出备选，否则只输出一行")
+        return lines.joined(separator: "\n")
+    }
+
+    public static func systemPrompt(context: String?, userDictEntries: [String], custom: String? = nil) -> String {
+        var lines = [PinyinLLMConfig.effectiveCustom(custom) ?? defaultInstructions()]
         if let context, !context.isEmpty {
             lines.append("")
             lines.append("光标前已有的文本（输出需与它衔接）：\(context)")
@@ -142,7 +166,7 @@ public struct PinyinConverter {
             "temperature": 0.1,
             "max_tokens": 256,
             "messages": [
-                ["role": "system", "content": PinyinPromptBuilder.systemPrompt(context: context, userDictEntries: userDictEntries)],
+                ["role": "system", "content": PinyinPromptBuilder.systemPrompt(context: context, userDictEntries: userDictEntries, custom: config.customPromptPinyin)],
                 ["role": "user", "content": PinyinPromptBuilder.userPrompt(raw: raw, segments: segments, boundaryAlternatives: boundaryAlternatives)],
             ],
         ]
@@ -173,12 +197,14 @@ public enum PinyinError: LocalizedError {
     case notConfigured
     case httpError(Int)
     case emptyResponse
+    case timeout
 
     public var errorDescription: String? {
         switch self {
         case .notConfigured: return "未配置 LLM API（在 Aime 设置 → 精修 里填写）"
         case .httpError(let code): return "LLM 请求失败（HTTP \(code)）"
         case .emptyResponse: return "LLM 返回了空结果"
+        case .timeout: return "LLM 响应超时"
         }
     }
 }

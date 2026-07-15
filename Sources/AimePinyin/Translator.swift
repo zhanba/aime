@@ -14,7 +14,8 @@ public struct TranslationResult: Sendable, Equatable {
 }
 
 public enum TranslatorPromptBuilder {
-    public static func systemPrompt(context: String?) -> String {
+    /// 内置指令部分（不含上下文），设置页「填入内置」也用它
+    public static func defaultInstructions() -> String {
         var lines: [String] = []
         lines.append("你是输入法内置的中译英引擎。把用户输入的中文（可能夹杂英文单词）翻译成自然地道的英文。")
         lines.append("")
@@ -24,6 +25,11 @@ public enum TranslatorPromptBuilder {
         lines.append("- 原文中已有的英文单词、专有名词原样保留")
         lines.append("- 原文没有句末标点，译文也不加句末标点")
         lines.append("- 第一行输出首选译文；若存在语气或措辞明显不同的另一种译法，第二行输出备选，否则只输出一行")
+        return lines.joined(separator: "\n")
+    }
+
+    public static func systemPrompt(context: String?, custom: String? = nil) -> String {
+        var lines = [PinyinLLMConfig.effectiveCustom(custom) ?? defaultInstructions()]
         if let context, !context.isEmpty {
             lines.append("")
             lines.append("光标前已有的文本（多为对话上文，译文的称呼、用词、语气需与之衔接）：\(context)")
@@ -57,7 +63,7 @@ public struct Translator {
             "temperature": 0.3,
             "max_tokens": 512,
             "messages": [
-                ["role": "system", "content": TranslatorPromptBuilder.systemPrompt(context: context)],
+                ["role": "system", "content": TranslatorPromptBuilder.systemPrompt(context: context, custom: config.customPromptTranslate)],
                 ["role": "user", "content": source],
             ],
         ]

@@ -19,6 +19,16 @@ public enum SharedConfig {
         if stored != fuzzyRuleIDs { d.set(Array(fuzzyRuleIDs), forKey: "fuzzyRuleIDs") }
     }
 
+    /// 自定义 LLM prompt（空 = 内置），app 设置变更时镜像
+    public static func mirrorPromptsFromApp(refine: String, pinyin: String, translate: String) {
+        let d = defaults
+        if d.string(forKey: "customPromptRefine") ?? "" != refine { d.set(refine, forKey: "customPromptRefine") }
+        if d.string(forKey: "customPromptPinyin") ?? "" != pinyin { d.set(pinyin, forKey: "customPromptPinyin") }
+        if d.string(forKey: "customPromptTranslate") ?? "" != translate {
+            d.set(translate, forKey: "customPromptTranslate")
+        }
+    }
+
     /// IME 进程发起语音会话所需的 ASR 配置（app 设置变更时镜像）。
     /// 蓝牙收音策略以 rawValue 传递（AimePinyin 不依赖 AimeXPC 的枚举类型）。
     public struct SharedASRConfig {
@@ -115,7 +125,10 @@ public enum SharedConfig {
             apiBaseURL: d.string(forKey: "apiBaseURL") ?? "https://api.deepseek.com/v1",
             apiModel: d.string(forKey: "apiModel") ?? "deepseek-v4-flash",
             apiKey: d.string(forKey: "apiKey") ?? "",
-            enabledFuzzyRuleIDs: fuzzy ?? FuzzyRule.defaultEnabled
+            enabledFuzzyRuleIDs: fuzzy ?? FuzzyRule.defaultEnabled,
+            customPromptRefine: d.string(forKey: "customPromptRefine") ?? "",
+            customPromptPinyin: d.string(forKey: "customPromptPinyin") ?? "",
+            customPromptTranslate: d.string(forKey: "customPromptTranslate") ?? ""
         )
     }
 }

@@ -35,6 +35,7 @@ actor Qwen3Inference {
 
     func load(modelID: String, progressHandler: @escaping (Double, String) -> Void) async throws {
         if loadedModelID == modelID, model != nil { return }
+        DiagLog.log("加载模型 \(modelID)")
         model = nil // 先释放旧模型再加载，避免两份权重同时驻留
         loadedModelID = nil
         let loaded = try await Qwen3ASRModel.fromPretrained(
@@ -45,6 +46,7 @@ actor Qwen3Inference {
         )
         model = loaded
         loadedModelID = modelID
+        DiagLog.log("模型加载完成 \(modelID)")
     }
 
     /// VAD 模型很小（~2MB），加载失败不阻塞 ASR（退化为不修剪）。
@@ -115,6 +117,10 @@ public final class Qwen3ASRSession: ASRSession {
     private var language: String?
     private var contextHint: String?
     private var partialTask: Task<Void, Never>?
+    /// 会话内模型自愈加载：prepare 可能发生在另一个进程（app 在 daemon 未就绪时
+    /// 进程内加载，之后会话又路由到 daemon），本进程模型可能是 nil。start 时幂等
+    /// 补加载（已加载时是 no-op），finish 转写前 await，杜绝 transcriberNotReady。
+    private var prepareTask: Task<Void, Error>?
     private var cancelled = false
 
     private static let targetFormat = AVAudioFormat(
@@ -138,6 +144,11 @@ public final class Qwen3ASRSession: ASRSession {
     public func start(config: ASRSessionConfig) async throws {
         language = Self.languageHint(for: config.localeID)
         contextHint = config.contextHint
+        let modelID = config.qwen3ModelID
+        prepareTask = Task { [inference] in
+            try await inference.load(modelID: modelID) { _, _ in }
+            try await inference.loadVAD()
+        }
         recorder.bluetoothMicStrategy = config.bluetoothMicStrategy ?? .quickRelease
         recorder.onBuffer = { [weak self] buffer in self?.feed(buffer) }
         recorder.onLevel = { [weak self] level in
@@ -160,6 +171,9 @@ public final class Qwen3ASRSession: ASRSession {
     public func finish() async throws -> ASRResult {
         recorder.stop()
         partialTask?.cancel()
+        if let prepareTask {
+            try await prepareTask.value
+        }
         let snapshot = snapshotSamples()
         guard snapshot.count >= Self.minSampleCount else {
             DiagLog.log("定稿：样本不足 \(snapshot.count)，返回空")
