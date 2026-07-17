@@ -53,6 +53,8 @@ final class AppState: ObservableObject {
     private let hotkey = HotkeyMonitor()
     private var asrSession: ASRSession?
     private var contextSnapshot: ContextSnapshot?
+    /// 会话开始时的光标屏幕矩形，浮层转场的起点/归位点
+    private var caretRect: NSRect?
     private var sessionCounter = 0
     private var activeHotkeyChoice: HotkeyChoice?
     private var activeBackendID: ASRBackendID?
@@ -219,6 +221,8 @@ final class AppState: ObservableObject {
 
         // 先采上下文：此刻焦点还在目标应用
         contextSnapshot = ContextCapture.capture(maxChars: Settings.contextMaxChars)
+        // 光标屏幕位置：浮层从这里飞入、成功后飞回（拿不到则退回普通入退场）
+        caretRect = ContextCapture.caretScreenRect()
         usedContext = false
         refineSkipped = settings.apiKey.isEmpty
         liveTranscript = ""
@@ -236,7 +240,7 @@ final class AppState: ObservableObject {
 
         phase = .recording
         voice.captureReady = false
-        overlay.show(model: voice)
+        overlay.show(model: voice, from: caretRect)
 
         Task {
             let session = await resolveBackend().makeSession()
@@ -348,9 +352,10 @@ final class AppState: ObservableObject {
                         self.overlay.hide()
                     }
                 } else {
-                    // 成功反馈就是上屏文本本身，浮层安静收起（与 IME 路径一致）
+                    // 成功反馈就是上屏文本本身，浮层安静收起（与 IME 路径一致），
+                    // 种子飞回光标处呼应「文字落回输入框」
                     self.phase = .idle
-                    self.overlay.hide()
+                    self.overlay.hide(returnTo: self.caretRect)
                 }
             } catch {
                 guard self.sessionCounter == sessionID else { return }

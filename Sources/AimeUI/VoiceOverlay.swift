@@ -44,6 +44,8 @@ public final class VoiceOverlayController {
     private var visible = false
     /// 内容变化后让窗口阴影跟上 pill 的新形状（透明窗口阴影按不透明像素计算）
     private var shadowSync: AnyCancellable?
+    /// 转场种子：从光标位置飞抵 pill 落点（入场）/ 飞回光标（成功退场）的小胶囊
+    private var seedPanel: NSPanel?
 
     /// pill 底边距屏幕可见区域（Dock 之上）底部的距离
     private static let bottomMargin: CGFloat = 24
@@ -52,7 +54,9 @@ public final class VoiceOverlayController {
 
     public init() {}
 
-    public func show(model: VoiceOverlayModel) {
+    /// sourceRect：光标/输入框的屏幕矩形（AppKit 坐标）。传入则种子从此处飞抵
+    /// pill 落点、入场动画途中衔接；nil 走原有的上浮淡入。
+    public func show(model: VoiceOverlayModel, from sourceRect: NSRect? = nil) {
         guard model.phase != .idle else {
             hide()
             return
@@ -73,23 +77,65 @@ public final class VoiceOverlayController {
                 return
             }
             visible = true
-            // 入场：从下方 10pt 上浮 + 淡入（系统 HUD 式过渡）
-            panel.setFrame(target.offsetBy(dx: 0, dy: -10), display: false)
-            panel.alphaValue = 0
-            panel.orderFrontRegardless()
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.28
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                panel.animator().alphaValue = 1
-                panel.animator().setFrame(target, display: true)
+            if let sourceRect {
+                // 种子从光标处的小胶囊边飞边长大到 pill 尺寸，落点即 pill 位置；
+                // pill 在种子到达前原地交叉淡入（不做上浮位移，避免「从底部弹出」感）
+                flySeed(
+                    from: Self.seedRect(centeredOn: sourceRect),
+                    to: Self.pillLandingRect(stripTarget: target),
+                    duration: 0.42
+                )
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) { [weak self, weak panel] in
+                    MainActor.assumeIsolated {
+                        guard let self, self.visible, let panel else { return }
+                        panel.setFrame(target, display: false)
+                        panel.alphaValue = 0
+                        panel.orderFrontRegardless()
+                        NSAnimationContext.runAnimationGroup { context in
+                            context.duration = 0.18
+                            panel.animator().alphaValue = 1
+                        }
+                    }
+                }
+            } else {
+                // 入场：从下方 10pt 上浮 + 淡入（系统 HUD 式过渡）
+                panel.setFrame(target.offsetBy(dx: 0, dy: -10), display: false)
+                panel.alphaValue = 0
+                panel.orderFrontRegardless()
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.28
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    panel.animator().alphaValue = 1
+                    panel.animator().setFrame(target, display: true)
+                }
             }
         }
     }
 
-    public func hide() {
+    /// returnTo：传入光标矩形则退场时种子从 pill 位置飞回光标（象征文字落回输入框），
+    /// 仅建议在成功上屏时使用；nil 走原有的下沉淡出。
+    public func hide(returnTo sourceRect: NSRect? = nil) {
         guard visible, let panel else { return }
         visible = false
         MainActor.assumeIsolated {
+            if let sourceRect {
+                // pill 原地淡出，同尺寸种子接棒边缩小边飞回光标——「文字落回输入框」；
+                // 后半程渐隐，抵达时刚好溶解成光标细条，避免「落地后再蒸发」的停顿
+                flySeed(
+                    from: Self.pillLandingRect(stripTarget: panel.frame),
+                    to: Self.caretAbsorbRect(centeredOn: sourceRect),
+                    duration: 0.38,
+                    dissolveInFlight: true
+                )
+                NSAnimationContext.runAnimationGroup({ context in
+                    context.duration = 0.15
+                    panel.animator().alphaValue = 0
+                }, completionHandler: { [weak self] in
+                    guard let self, !self.visible else { return }
+                    panel.orderOut(nil)
+                })
+                return
+            }
             // 退场：下沉 + 淡出
             let sunk = panel.frame.offsetBy(dx: 0, dy: -10)
             NSAnimationContext.runAnimationGroup({ context in
@@ -102,6 +148,103 @@ public final class VoiceOverlayController {
                 panel.orderOut(nil)
             })
         }
+    }
+
+    /// 初始 pill（图标+单行标题）的近似矩形：水平居中、贴条带底部。
+    /// 种子在此落地/起飞并与 pill 交叉淡化，尺寸吻合让「种子长成 pill」的错觉成立。
+    private static func pillLandingRect(stripTarget: NSRect) -> NSRect {
+        NSRect(x: stripTarget.midX - 75, y: stripTarget.minY, width: 150, height: 42)
+    }
+
+    /// 光标处的种子矩形：可见但不喧宾夺主
+    private static func seedRect(centeredOn rect: NSRect) -> NSRect {
+        NSRect(x: rect.midX - 22, y: rect.midY - 11, width: 44, height: 22)
+    }
+
+    /// 回程终点：接近光标本身的细条，配合途中渐隐形成「被吸收」观感
+    private static func caretAbsorbRect(centeredOn rect: NSRect) -> NSRect {
+        NSRect(x: rect.midX - 5, y: rect.midY - 9, width: 10, height: 18)
+    }
+
+    /// 种子飞行：淡入 → 位移+尺寸渐变（easeInOut，圆角同步过渡）→ 淡出收起。
+    /// dissolveInFlight：后半程渐隐、抵达即消失（回程用）；false 则到达后才淡出（去程
+    /// 用，pill 同时交叉淡入盖住种子）。
+    @MainActor
+    private func flySeed(from: NSRect, to: NSRect, duration: TimeInterval, dissolveInFlight: Bool = false) {
+        let seed = ensureSeedPanel()
+        seed.setFrame(from, display: false)
+        seed.alphaValue = 0
+        if let layer = seed.contentView?.layer {
+            // 圆角随高度过渡保持胶囊观感（frame 动画不带圆角，需单独动画）
+            let radius = CABasicAnimation(keyPath: "cornerRadius")
+            radius.fromValue = min(from.height / 2, 18)
+            radius.toValue = min(to.height / 2, 18)
+            radius.duration = duration
+            radius.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer.cornerRadius = min(to.height / 2, 18)
+            layer.add(radius, forKey: "cornerRadius")
+        }
+        seed.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.08
+            seed.animator().alphaValue = 1
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            seed.animator().setFrame(to, display: true)
+        }, completionHandler: { [weak seed] in
+            guard !dissolveInFlight else { return } // 渐隐已由下方并行动画负责
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.15
+                seed?.animator().alphaValue = 0
+            }, completionHandler: {
+                seed?.orderOut(nil)
+            })
+        })
+        if dissolveInFlight {
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration * 0.45) { [weak seed] in
+                MainActor.assumeIsolated {
+                    guard let seed else { return }
+                    NSAnimationContext.runAnimationGroup({ context in
+                        context.duration = duration * 0.55
+                        context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                        seed.animator().alphaValue = 0
+                    }, completionHandler: { [weak seed] in
+                        seed?.orderOut(nil)
+                    })
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func ensureSeedPanel() -> NSPanel {
+        if let seedPanel { return seedPanel }
+        let panel = NSPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = .statusBar
+        panel.ignoresMouseEvents = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // 迷你 pill 同款材质胶囊，视觉上是 pill 的「种子」
+        let effect = NSVisualEffectView()
+        effect.material = .hudWindow
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = 8
+        effect.layer?.cornerCurve = .continuous
+        effect.layer?.masksToBounds = true
+        panel.contentView = effect
+        seedPanel = panel
+        return panel
     }
 
     @MainActor

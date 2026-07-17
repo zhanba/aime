@@ -1,4 +1,6 @@
 import AimeASR
+import AimeUI
+import AppKit
 import Carbon
 import Foundation
 import ServiceManagement
@@ -9,6 +11,10 @@ enum DebugCLI {
     static func runIfNeeded() {
         if CommandLine.arguments.contains("--register-ime") {
             registerIME()
+            return
+        }
+        if CommandLine.arguments.contains("--overlay-demo") {
+            runOverlayDemo()
             return
         }
         if CommandLine.arguments.contains("--daemon-prepare") {
@@ -62,6 +68,32 @@ enum DebugCLI {
             print("register-ime: \(error.localizedDescription)")
             exit(1)
         }
+    }
+
+    /// `--overlay-demo`：以当前鼠标位置模拟光标，走一遍浮层转场时间线
+    /// （种子飞入 → 录音 → 润色 → 种子飞回），调动画不用真按热键说话。
+    private static func runOverlayDemo() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        let model = VoiceOverlayModel()
+        let overlay = VoiceOverlayController()
+        let mouse = NSEvent.mouseLocation
+        let caret = NSRect(x: mouse.x, y: mouse.y, width: 2, height: 18)
+        Task { @MainActor in
+            model.phase = .recording
+            model.captureReady = true
+            overlay.show(model: model, from: caret)
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            model.audioLevel = 0.6
+            model.liveTranscript = "帮我把这段话整理一下"
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            model.phase = .refining
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            overlay.hide(returnTo: caret)
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            exit(0)
+        }
+        app.run()
     }
 
     /// `--daemon-prepare`：经 XPC 让 daemon 加载 Qwen3 0.6B。连跑两次对比耗时，
