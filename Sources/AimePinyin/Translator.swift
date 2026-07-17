@@ -58,7 +58,7 @@ public struct Translator {
         request.timeoutInterval = 12
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": config.apiModel,
             "temperature": 0.3,
             "max_tokens": 512,
@@ -67,6 +67,9 @@ public struct Translator {
                 ["role": "user", "content": source],
             ],
         ]
+        if config.disablesThinking {
+            body["thinking"] = ["type": "disabled"]
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: request)

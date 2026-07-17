@@ -42,4 +42,48 @@ final class VoiceRefinerTests: XCTestCase {
         XCTAssertNil(VoiceRefiner.contentFromNonStreamBody("not json"))
         XCTAssertNil(VoiceRefiner.contentFromNonStreamBody(#"{"choices":[]}"#))
     }
+
+    // MARK: - DeepSeek 关闭思维链
+
+    private func config(baseURL: String, model: String) -> PinyinLLMConfig {
+        PinyinLLMConfig(apiBaseURL: baseURL, apiModel: model, apiKey: "k", enabledFuzzyRuleIDs: [])
+    }
+
+    func testDisablesThinkingOnlyForDeepSeek() {
+        XCTAssertTrue(config(baseURL: "https://api.deepseek.com/v1", model: "deepseek-v4-flash").disablesThinking)
+        // 第三方网关挂 deepseek 模型也算
+        XCTAssertTrue(config(baseURL: "https://gateway.example.com/v1", model: "DeepSeek-V4").disablesThinking)
+        XCTAssertFalse(config(baseURL: "https://api.openai.com/v1", model: "gpt-5.2").disablesThinking)
+        XCTAssertFalse(config(baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-flash").disablesThinking)
+    }
+
+    // MARK: - 超短文本跳过精修
+
+    func testCanSkipRefineForUltraShortCleanText() {
+        XCTAssertTrue(VoiceRefiner.canSkipRefine("好的"))
+        XCTAssertTrue(VoiceRefiner.canSkipRefine("没问题"))
+        XCTAssertTrue(VoiceRefiner.canSkipRefine("确认一下"))
+        XCTAssertTrue(VoiceRefiner.canSkipRefine("  收到  "))  // 判定前先去首尾空白
+        XCTAssertTrue(VoiceRefiner.canSkipRefine("OK"))
+    }
+
+    func testCanSkipRefineRejectsLongerText() {
+        XCTAssertFalse(VoiceRefiner.canSkipRefine("帮我看一下"))
+        XCTAssertFalse(VoiceRefiner.canSkipRefine(String(repeating: "字", count: 20)))
+    }
+
+    func testCanSkipRefineRejectsFillers() {
+        // 语气字：clean/formal 风格要删，必须送精修
+        XCTAssertFalse(VoiceRefiner.canSkipRefine("嗯好的"))
+        XCTAssertFalse(VoiceRefiner.canSkipRefine("好啊"))
+        XCTAssertFalse(VoiceRefiner.canSkipRefine("哦哦"))
+        // 填充词
+        XCTAssertFalse(VoiceRefiner.canSkipRefine("那个呢"))
+        XCTAssertFalse(VoiceRefiner.canSkipRefine("就是说"))
+    }
+
+    func testCanSkipRefineRejectsEmpty() {
+        XCTAssertFalse(VoiceRefiner.canSkipRefine(""))
+        XCTAssertFalse(VoiceRefiner.canSkipRefine("   "))
+    }
 }

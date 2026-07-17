@@ -24,6 +24,13 @@ public struct PinyinLLMConfig: Codable, Sendable {
         self.customPromptTranslate = customPromptTranslate
     }
 
+    /// DeepSeek 默认生成隐藏思维链，精修/整句/翻译这类轻任务纯付延迟税（实测精修 65 病例
+    /// 关闭后质量不降反升、p50 1.2s→0.7s）。`thinking` 字段是 DeepSeek 方言，其他 OpenAI
+    /// 兼容端点可能 400，因此仅在配置指向 DeepSeek 时发送。
+    public var disablesThinking: Bool {
+        apiBaseURL.lowercased().contains("deepseek") || apiModel.lowercased().contains("deepseek")
+    }
+
     /// 空白视为未自定义
     static func effectiveCustom(_ custom: String?) -> String? {
         guard let trimmed = custom?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
@@ -161,7 +168,7 @@ public struct PinyinConverter {
         request.timeoutInterval = 12
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": config.apiModel,
             "temperature": 0.1,
             "max_tokens": 256,
@@ -170,6 +177,9 @@ public struct PinyinConverter {
                 ["role": "user", "content": PinyinPromptBuilder.userPrompt(raw: raw, segments: segments, boundaryAlternatives: boundaryAlternatives)],
             ],
         ]
+        if config.disablesThinking {
+            body["thinking"] = ["type": "disabled"]
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: request)

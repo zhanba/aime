@@ -28,7 +28,6 @@ public final class VoiceOverlayModel: ObservableObject {
     /// 随后被流式精修结果逐步替换。IME 路径录音期间文本显示在组合区，
     /// 此字段保持空避免双重显示。
     @Published public var liveTranscript = ""
-    @Published public var finalText = ""
     @Published public var usedContext = false
     @Published public var refineSkipped = false
 
@@ -252,14 +251,11 @@ struct VoicePill: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.purple)
                 .symbolEffect(.pulse)
-        case .done where state.refineSkipped:
+        case .done:
+            // done 只剩「未精修」一种停留场景：精修成功时上屏文本即反馈，浮层直接收起
             Image(systemName: "exclamationmark.circle.fill")
                 .font(.system(size: 15))
                 .foregroundStyle(.yellow)
-        case .done:
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 15))
-                .foregroundStyle(.green)
         case .noSpeech:
             Image(systemName: "mic.slash.fill")
                 .font(.system(size: 14))
@@ -278,7 +274,7 @@ struct VoicePill: View {
         case .recording: return state.captureReady ? "正在听" : "启动麦克风"
         case .transcribing: return "转写中"
         case .refining: return "润色中"
-        case .done: return state.refineSkipped ? "未精修" : "已输入"
+        case .done: return "未精修"
         case .noSpeech: return "没有听到内容"
         case .failed: return "出错"
         }
@@ -295,7 +291,7 @@ struct VoicePill: View {
             // 先展示 ASR 原文，流式精修结果到达后逐步替换，等待不再是黑盒
             if !state.liveTranscript.isEmpty { return state.liveTranscript }
             return state.usedContext ? "已参考光标前文本" : nil
-        case .done: return state.refineSkipped ? "已用识别原文" : state.finalText
+        case .done: return "已用识别原文"
         case .failed(let message): return message
         }
     }

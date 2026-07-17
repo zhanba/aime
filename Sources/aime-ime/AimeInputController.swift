@@ -83,8 +83,7 @@ class AimeInputController: IMKInputController {
     }
 
     /// done/failed 短暂停留后自动收起
-    private func flashVoiceOverlay(_ phase: VoicePhase, text: String = "", refineSkipped: Bool = false) {
-        Self.voiceOverlayModel.finalText = text
+    private func flashVoiceOverlay(_ phase: VoicePhase, refineSkipped: Bool = false) {
         Self.voiceOverlayModel.refineSkipped = refineSkipped
         showVoiceOverlay(phase)
         let id = Self.overlayFlashID
@@ -422,13 +421,19 @@ class AimeInputController: IMKInputController {
             confirmedStack.append(ConfirmedSegment(text: currentPreview, keys: rawBuffer, source: .pinyin))
             clearActiveBuffer()
         }
-        // 与 app 热键路径一致：配置了 AI 服务则按「输出风格」精修后再入组合区
+        // 与 app 热键路径一致：配置了 AI 服务则按「输出风格」精修后再入组合区；
+        // 超短文本跳过精修直接入组合区（省一次 LLM 往返）
         let config = SharedConfig.loadLLMConfig()
-        if !config.apiKey.isEmpty, !SharedConfig.pureLocalMode, !clientBlocked {
+        let aiAvailable = !config.apiKey.isEmpty && !SharedConfig.pureLocalMode && !clientBlocked
+        let skipShort = aiAvailable && VoiceRefiner.canSkipRefine(trimmed)
+        if skipShort {
+            RefineLog.log("精修跳过 超短文本 原文\(trimmed.count)字")
+        }
+        if aiAvailable, !skipShort {
             startVoiceRefine(trimmed, config: config)
         } else {
             appendVoiceSegment(trimmed)
-            flashVoiceOverlay(.done, text: trimmed, refineSkipped: true)
+            flashVoiceOverlay(.done, refineSkipped: true)
         }
     }
 
@@ -477,7 +482,7 @@ class AimeInputController: IMKInputController {
             let final = cleaned.isEmpty ? raw : cleaned
             self.appendVoiceSegment(final)
             if refined == nil {
-                self.flashVoiceOverlay(.done, text: final, refineSkipped: true)
+                self.flashVoiceOverlay(.done, refineSkipped: true)
             } else {
                 Self.dismissVoiceOverlay()
             }

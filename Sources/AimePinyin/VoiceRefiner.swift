@@ -25,6 +25,21 @@ public enum RefineStyle: String, CaseIterable, Identifiable, Sendable {
 public struct VoiceRefiner {
     public init() {}
 
+    /// 超短文本跳过精修：≤4 字且不含语气/填充词时润色空间几乎为零，
+    /// 省掉整次 LLM 往返（这也是用户对延迟最敏感的场景）。
+    /// 判定方向保守：误送精修只是维持现状的延迟，误跳过会伤质量。
+    /// 所有输出风格共用同一判定，保证行为一致。
+    public static func canSkipRefine(_ transcript: String) -> Bool {
+        let t = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, t.count <= 4 else { return false }
+        // 含语气词仍送精修：clean/formal 风格要处理它们（嗯好的 → 好的）
+        let fillerChars = CharacterSet(charactersIn: "嗯呃诶唉哦噢喔啊呀嘛")
+        guard t.rangeOfCharacter(from: fillerChars) == nil else { return false }
+        let fillerWords = ["那个", "这个", "就是", "然后"]
+        guard !fillerWords.contains(where: { t.contains($0) }) else { return false }
+        return true
+    }
+
     /// onPartial：流式精修的增量回调（累积全文，非 delta），用于浮层实时展示。
     /// 最终以返回值为准；超时/失败时调用方回退原文，已展示的 partial 会被覆盖。
     public func refine(
@@ -47,7 +62,7 @@ public struct VoiceRefiner {
         request.timeoutInterval = deadline
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": config.apiModel,
             "temperature": 0.2,
             "stream": true,
@@ -59,21 +74,46 @@ public struct VoiceRefiner {
                 ["role": "user", "content": transcript],
             ],
         ]
+        if config.disablesThinking {
+            body["thinking"] = ["type": "disabled"]
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let content = try await Self.withDeadline(deadline) {
-            try await Self.streamCompletion(request: request, onPartial: onPartial)
+        let began = Date()
+        do {
+            let finalRequest = request
+            let (content, firstTokenDelay) = try await Self.withDeadline(deadline) {
+                try await Self.streamCompletion(request: finalRequest, began: began, onPartial: onPartial)
+            }
+            let refined = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !refined.isEmpty else { throw PinyinError.emptyResponse }
+            let total = Date().timeIntervalSince(began)
+            let ttft = firstTokenDelay.map { String(format: "%.0fms", $0 * 1000) } ?? "非流式"
+            // 无改动 = 精修白跑一趟；其占比决定「跳过门控」值不值得做深
+            let unchanged = refined == transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            RefineLog.log(String(
+                format: "精修完成 总耗时%.0fms 首包%@ 原文%d字 输出%d字%@ model=%@",
+                total * 1000, ttft, transcript.count, refined.count,
+                unchanged ? " 无改动" : "", config.apiModel
+            ))
+            return refined
+        } catch {
+            RefineLog.log(String(
+                format: "精修失败 耗时%.0fms 原文%d字 model=%@: %@",
+                Date().timeIntervalSince(began) * 1000, transcript.count, config.apiModel,
+                String(describing: error)
+            ))
+            throw error
         }
-        let refined = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !refined.isEmpty else { throw PinyinError.emptyResponse }
-        return refined
     }
 
     /// 逐行读取 SSE 流并回调累积文本；服务端不支持流式（返回普通 JSON）时自动兼容。
+    /// began：请求发起时刻，用于测首包延迟（含连接建立）；非流式响应返回 nil。
     private static func streamCompletion(
         request: URLRequest,
+        began: Date,
         onPartial: (@Sendable (String) -> Void)?
-    ) async throws -> String {
+    ) async throws -> (content: String, firstTokenDelay: TimeInterval?) {
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             throw PinyinError.httpError(http.statusCode)
@@ -81,6 +121,7 @@ public struct VoiceRefiner {
         var accumulated = ""
         var sawSSE = false
         var nonSSEBody = ""
+        var firstTokenDelay: TimeInterval?
         for try await line in bytes.lines {
             guard line.hasPrefix("data:") else {
                 if !sawSSE { nonSSEBody += line }
@@ -90,14 +131,17 @@ public struct VoiceRefiner {
             let payload = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
             if payload == "[DONE]" { break }
             guard let piece = deltaContent(fromSSEPayload: payload) else { continue }
+            if firstTokenDelay == nil {
+                firstTokenDelay = Date().timeIntervalSince(began)
+            }
             accumulated += piece
             onPartial?(accumulated)
         }
-        if sawSSE { return accumulated }
+        if sawSSE { return (accumulated, firstTokenDelay) }
         guard let content = contentFromNonStreamBody(nonSSEBody) else {
             throw PinyinError.emptyResponse
         }
-        return content
+        return (content, nil)
     }
 
     /// 单个 SSE data 负载里的增量文本；role 首包、空 delta、finish 包等返回 nil

@@ -29,11 +29,6 @@ final class AppState: ObservableObject {
         set { voice.liveTranscript = newValue }
     }
 
-    var finalText: String {
-        get { voice.finalText }
-        set { voice.finalText = newValue }
-    }
-
     var usedContext: Bool {
         get { voice.usedContext }
         set { voice.usedContext = newValue }
@@ -227,7 +222,6 @@ final class AppState: ObservableObject {
         usedContext = false
         refineSkipped = settings.apiKey.isEmpty
         liveTranscript = ""
-        finalText = ""
 
         // 识别偏置：光标前文本 + 用户词库热词（词库双向增强的语音侧入口）
         var hintParts: [String] = []
@@ -301,7 +295,11 @@ final class AppState: ObservableObject {
 
                 let settings = Settings.current()
                 var output = raw
-                if !settings.apiKey.isEmpty {
+                if !settings.apiKey.isEmpty, VoiceRefiner.canSkipRefine(raw) {
+                    // 超短文本直接上屏：省一次 LLM 往返，浮层按「未精修」提示
+                    RefineLog.log("精修跳过 超短文本 原文\(raw.count)字")
+                    self.refineSkipped = true
+                } else if !settings.apiKey.isEmpty {
                     self.phase = .refining
                     self.usedContext = self.contextSnapshot?.hasText ?? false
                     // 精修期间浮层先展示 ASR 原文，流式精修结果到达后逐步替换
@@ -337,14 +335,20 @@ final class AppState: ObservableObject {
                 }
 
                 guard self.sessionCounter == sessionID else { return }
-                self.finalText = output
                 if (2 ... 8).contains(output.count) {
                     UserDictionary.shared.record(output, source: "voice")
                 }
                 TextInjector.inject(output)
-                self.phase = .done
-                try? await Task.sleep(nanoseconds: 1_800_000_000)
-                if self.phase == .done, self.sessionCounter == sessionID {
+                if self.refineSkipped {
+                    // 未精修必须可见：短暂停留提示后收起
+                    self.phase = .done
+                    try? await Task.sleep(nanoseconds: 1_800_000_000)
+                    if self.phase == .done, self.sessionCounter == sessionID {
+                        self.phase = .idle
+                        self.overlay.hide()
+                    }
+                } else {
+                    // 成功反馈就是上屏文本本身，浮层安静收起（与 IME 路径一致）
                     self.phase = .idle
                     self.overlay.hide()
                 }

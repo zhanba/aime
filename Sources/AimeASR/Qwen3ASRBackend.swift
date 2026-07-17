@@ -169,6 +169,7 @@ public final class Qwen3ASRSession: ASRSession {
     }
 
     public func finish() async throws -> ASRResult {
+        let began = Date()
         recorder.stop()
         partialTask?.cancel()
         if let prepareTask {
@@ -190,7 +191,9 @@ public final class Qwen3ASRSession: ASRSession {
             samples: trimmed, language: language, context: contextHint
         )
         let cleaned = Self.sanitize(text, sampleCount: trimmed.count)
-        DiagLog.log("定稿：样本=\(snapshot.count) VAD后=\(trimmed.count) 原文\(text.count)字 清理后\(cleaned.count)字")
+        DiagLog.log(String(format: "定稿：样本=%d VAD后=%d 原文%d字 清理后%d字 耗时%.0fms",
+                           snapshot.count, trimmed.count, text.count, cleaned.count,
+                           Date().timeIntervalSince(began) * 1000))
         return ASRResult(text: cleaned, segments: nil)
     }
 

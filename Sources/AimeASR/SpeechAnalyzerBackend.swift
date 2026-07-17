@@ -144,6 +144,7 @@ public final class SpeechAnalyzerSession: ASRSession {
     }
 
     public func finish() async throws -> ASRResult {
+        let began = Date()
         recorder.stop()
         inputContinuation?.finish()
         try await withTimeout(seconds: 10) { [analyzer] in
@@ -153,7 +154,7 @@ public final class SpeechAnalyzerSession: ASRSession {
         let text = withState {
             (finalizedText + volatileText).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        DiagLog.log("定稿：文本\(text.count)字")
+        DiagLog.log(String(format: "定稿：文本%d字 耗时%.0fms", text.count, Date().timeIntervalSince(began) * 1000))
         return ASRResult(text: text, segments: nil)
     }
 
