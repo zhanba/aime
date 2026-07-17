@@ -25,12 +25,15 @@ public enum RefineStyle: String, CaseIterable, Identifiable, Sendable {
 public struct VoiceRefiner {
     public init() {}
 
+    /// onPartial：流式精修的增量回调（累积全文，非 delta），用于浮层实时展示。
+    /// 最终以返回值为准；超时/失败时调用方回退原文，已展示的 partial 会被覆盖。
     public func refine(
         transcript: String,
         appName: String?,
         textBeforeCursor: String?,
         style: RefineStyle,
-        config: PinyinLLMConfig
+        config: PinyinLLMConfig,
+        onPartial: (@Sendable (String) -> Void)? = nil
     ) async throws -> String {
         var base = config.apiBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while base.hasSuffix("/") { base.removeLast() }
@@ -47,6 +50,7 @@ public struct VoiceRefiner {
         let body: [String: Any] = [
             "model": config.apiModel,
             "temperature": 0.2,
+            "stream": true,
             "messages": [
                 [
                     "role": "system",
@@ -57,22 +61,64 @@ public struct VoiceRefiner {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await Self.withDeadline(deadline) {
-            try await URLSession.shared.data(for: request)
-        }
-        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            throw PinyinError.httpError(http.statusCode)
-        }
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? String
-        else {
-            throw PinyinError.emptyResponse
+        let content = try await Self.withDeadline(deadline) {
+            try await Self.streamCompletion(request: request, onPartial: onPartial)
         }
         let refined = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !refined.isEmpty else { throw PinyinError.emptyResponse }
         return refined
+    }
+
+    /// 逐行读取 SSE 流并回调累积文本；服务端不支持流式（返回普通 JSON）时自动兼容。
+    private static func streamCompletion(
+        request: URLRequest,
+        onPartial: (@Sendable (String) -> Void)?
+    ) async throws -> String {
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            throw PinyinError.httpError(http.statusCode)
+        }
+        var accumulated = ""
+        var sawSSE = false
+        var nonSSEBody = ""
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data:") else {
+                if !sawSSE { nonSSEBody += line }
+                continue
+            }
+            sawSSE = true
+            let payload = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            if payload == "[DONE]" { break }
+            guard let piece = deltaContent(fromSSEPayload: payload) else { continue }
+            accumulated += piece
+            onPartial?(accumulated)
+        }
+        if sawSSE { return accumulated }
+        guard let content = contentFromNonStreamBody(nonSSEBody) else {
+            throw PinyinError.emptyResponse
+        }
+        return content
+    }
+
+    /// 单个 SSE data 负载里的增量文本；role 首包、空 delta、finish 包等返回 nil
+    static func deltaContent(fromSSEPayload payload: String) -> String? {
+        guard let data = payload.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let delta = choices.first?["delta"] as? [String: Any],
+              let piece = delta["content"] as? String, !piece.isEmpty
+        else { return nil }
+        return piece
+    }
+
+    /// 普通（非流式）chat/completions 响应体里的完整文本
+    static func contentFromNonStreamBody(_ body: String) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let content = message["content"] as? String
+        else { return nil }
+        return content
     }
 
     /// 精修总时长上限：用户在盯着浮层等上屏，宁可回退原文也不久等。

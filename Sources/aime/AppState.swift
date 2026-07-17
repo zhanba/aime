@@ -251,6 +251,9 @@ final class AppState: ObservableObject {
                 return
             }
             session.onUpdate = { [weak self] text in
+                // 伪流式整段重解码偶发被幻觉防护清空：忽略空帧保留上一帧，
+                // 避免浮层「有无文本」层级来回跳（标题字号/颜色反复切换）
+                guard !text.isEmpty else { return }
                 self?.liveTranscript = text
             }
             session.onLevel = { [weak self] level in
@@ -301,6 +304,8 @@ final class AppState: ObservableObject {
                 if !settings.apiKey.isEmpty {
                     self.phase = .refining
                     self.usedContext = self.contextSnapshot?.hasText ?? false
+                    // 精修期间浮层先展示 ASR 原文，流式精修结果到达后逐步替换
+                    self.liveTranscript = raw
                     do {
                         let context = self.contextSnapshot
                         output = try await VoiceRefiner().refine(
@@ -314,7 +319,14 @@ final class AppState: ObservableObject {
                                 apiKey: settings.apiKey,
                                 enabledFuzzyRuleIDs: [],
                                 customPromptRefine: settings.customPromptRefine
-                            )
+                            ),
+                            onPartial: { [weak self] partial in
+                                Task { @MainActor in
+                                    guard let self, self.sessionCounter == sessionID,
+                                          self.phase == .refining else { return }
+                                    self.liveTranscript = partial
+                                }
+                            }
                         )
                     } catch {
                         // 精修失败回退原始转写，不阻塞输入

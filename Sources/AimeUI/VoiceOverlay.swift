@@ -1,5 +1,5 @@
 import AppKit
-import DynamicNotchKit
+import Combine
 import SwiftUI
 
 /// 语音会话的可视状态机。app 全局热键与 IME 语音段两条路径共用，
@@ -24,25 +24,32 @@ public final class VoiceOverlayModel: ObservableObject {
     /// 采集真正就绪（首帧音频到达）。录音态据此区分「启动麦克风」与「正在听」，
     /// 蓝牙 HFP 建立约 1 秒，期间开口会丢字——就绪前波形置灰提示别急着说。
     @Published public var captureReady = false
+    /// 过程文本：录音/转写期间是 ASR 流式转写，精修期间先是原文、
+    /// 随后被流式精修结果逐步替换。IME 路径录音期间文本显示在组合区，
+    /// 此字段保持空避免双重显示。
     @Published public var liveTranscript = ""
     @Published public var finalText = ""
     @Published public var usedContext = false
     @Published public var refineSkipped = false
-    /// 目标屏幕无刘海（悬浮样式）时为 true，由 controller 每次 show 时按屏幕设置
-    @Published public var floatingStyle = false
 
     public init() {}
 }
 
-/// 灵动岛式语音指示器：从刘海下拉的面板（图标 + 标题 + 副文案），
-/// 无刘海屏幕自动降级为顶部悬浮卡片。面板形状、展开/收起动画、黑底/毛玻璃
-/// 由 DynamicNotchKit 处理；内容视图自绘，保证图标统一尺寸、整体居中。
-/// 展开期间阶段切换只更新内容，面板不重弹。
+/// 底部居中语音指示器（类似系统听写）：pill 卡片贴屏幕底部居中，
+/// 靠近多数场景下输入框/光标所在的视线区域。
+/// 实现为一条铺满屏宽的透明条带窗口，pill 在其中水平居中、贴底对齐——
+/// 内容增长只在条带内重排，窗口本身不需要随内容变尺寸。
+/// 展开期间阶段切换只更新内容（model 的 @Published），窗口不重弹。
 public final class VoiceOverlayController {
-    private typealias VoiceNotch = DynamicNotch<VoiceIslandExpanded, EmptyView, EmptyView>
-
-    private var notch: VoiceNotch?
+    private var panel: NSPanel?
     private var visible = false
+    /// 内容变化后让窗口阴影跟上 pill 的新形状（透明窗口阴影按不透明像素计算）
+    private var shadowSync: AnyCancellable?
+
+    /// pill 底边距屏幕可见区域（Dock 之上）底部的距离
+    private static let bottomMargin: CGFloat = 24
+    /// 条带高度：容纳 2 行副文案的 pill 加阴影富余
+    private static let stripHeight: CGFloat = 120
 
     public init() {}
 
@@ -52,68 +59,182 @@ public final class VoiceOverlayController {
             return
         }
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-        model.floatingStyle = screen.safeAreaInsets.top <= 0
         // 调用方都在主线程（AppState @MainActor / IMK 回调约定），安全接入 MainActor API
         MainActor.assumeIsolated {
-            let notch = ensureNotch(model: model)
-            guard !visible else { return } // 内容更新走 model 的 @Published，面板保持展开
+            let panel = ensurePanel(model: model)
+            let visibleFrame = screen.visibleFrame
+            let target = NSRect(
+                x: visibleFrame.minX,
+                y: visibleFrame.minY + Self.bottomMargin,
+                width: visibleFrame.width,
+                height: Self.stripHeight
+            )
+            guard !visible else { // 内容更新走 model 的 @Published，窗口保持显示
+                panel.setFrame(target, display: true)
+                return
+            }
             visible = true
-            Task { @MainActor in
-                await notch.expand(on: screen)
+            // 入场：从下方 10pt 上浮 + 淡入（系统 HUD 式过渡）
+            panel.setFrame(target.offsetBy(dx: 0, dy: -10), display: false)
+            panel.alphaValue = 0
+            panel.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.28
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().alphaValue = 1
+                panel.animator().setFrame(target, display: true)
             }
         }
     }
 
     public func hide() {
-        guard visible, let notch else { return }
+        guard visible, let panel else { return }
         visible = false
-        Task { @MainActor in
-            await notch.hide()
+        MainActor.assumeIsolated {
+            // 退场：下沉 + 淡出
+            let sunk = panel.frame.offsetBy(dx: 0, dy: -10)
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                panel.animator().alphaValue = 0
+                panel.animator().setFrame(sunk, display: true)
+            }, completionHandler: { [weak self] in
+                guard let self, !self.visible else { return }
+                panel.orderOut(nil)
+            })
         }
     }
 
-    private func ensureNotch(model: VoiceOverlayModel) -> VoiceNotch {
-        if let notch { return notch }
-        // 纯指示器：不参与鼠标交互，避免 hover 挂住自动收起
-        let notch = MainActor.assumeIsolated {
-            DynamicNotch(hoverBehavior: []) {
-                VoiceIslandExpanded(state: model)
-            }
-        }
-        self.notch = notch
-        return notch
+    @MainActor
+    private func ensurePanel(model: VoiceOverlayModel) -> NSPanel {
+        if let panel { return panel }
+        // 纯指示器：无边框、不抢焦点、不参与鼠标交互，全空间（含全屏应用）可见
+        let panel = NSPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        // 透明窗口的阴影按不透明像素形状计算，正好贴合 pill——即系统 HUD 的阴影来源
+        panel.hasShadow = true
+        panel.level = .statusBar
+        panel.ignoresMouseEvents = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.contentView = NSHostingView(rootView: VoicePillStrip(state: model))
+        // pill 随内容生长后重算阴影形状；下一个 runloop 执行保证在 SwiftUI 重排之后
+        shadowSync = model.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak panel] _ in panel?.invalidateShadow() }
+        self.panel = panel
+        return panel
     }
 }
 
-/// 下拉面板内容：统一 24pt 图标位 + 标题 + 可选副文案。
-/// 不加 Spacer、留白对称——kit 的外层容器会把整块内容在面板里居中。
-/// 刘海样式下 kit 注入 .foregroundStyle(.white)，.primary/.secondary 自动变白；
-/// 悬浮样式跟随系统深浅色。
-struct VoiceIslandExpanded: View {
+/// 条带内容：pill 水平居中、贴底对齐，内容增长向上生长
+struct VoicePillStrip: View {
     @ObservedObject var state: VoiceOverlayModel
 
     var body: some View {
-        HStack(spacing: 10) {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            VoicePill(state: state)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// 真·背后取样毛玻璃。SwiftUI Material 在无边框透明面板里不会取样窗口后的屏幕内容
+/// （渲染成近实底的灰），必须用 NSVisualEffectView 的 .behindWindow 混合才透得出来；
+/// 同时文字脱离 Material 的 vibrancy 混色，颜色不再随背后内容波动。
+struct HUDBackground: NSViewRepresentable {
+    var cornerRadius: CGFloat
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        // 实测各材质透明度（彩色背景截图对比）：fullScreenUI 最透且保留模糊，
+        // hudWindow 中等偏实，sheet/popover 接近实底。
+        // alpha 只作用于背景毛玻璃（文字在上层不受影响）：0.6 让背后内容
+        // 明显透出、模糊仍在，文字保持全对比度
+        view.material = .fullScreenUI
+        view.blendingMode = .behindWindow
+        view.alphaValue = 0.6
+        view.state = .active
+        view.wantsLayer = true
+        view.layer?.cornerRadius = cornerRadius
+        view.layer?.cornerCurve = .continuous
+        view.layer?.masksToBounds = true
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.layer?.cornerRadius = cornerRadius
+    }
+}
+
+/// 副文案的生长布局：先以无约束量出单行理想宽，贴合内容；到 maxWidth 上限后
+/// 以上限宽度重新提案让 Text 折行——实现「最小尺寸起步 → 横向变宽 → 到顶后纵向长高」。
+/// （`.frame(maxWidth:)` 是贪婪撑满的，`.fixedSize` 又会退化成单行截断，都做不到这条曲线）
+struct HugThenWrap: Layout {
+    var maxWidth: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let subview = subviews.first else { return .zero }
+        let ideal = subview.sizeThatFits(.unspecified)
+        let width = min(ideal.width, maxWidth)
+        return subview.sizeThatFits(ProposedViewSize(width: width, height: nil))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(
+            at: bounds.origin,
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
+        )
+    }
+}
+
+/// pill 卡片，对齐系统 HUD（听写指示器/音量）的设计语言：
+/// - 材质：ultraThinMaterial + 极淡描边 + 大半径软阴影，通透不遮内容，深浅色自适应；
+/// - 层级：无文本时标题即主角（13pt semibold）；文本出现后正文升为主角
+///   （13pt primary），标题退为 11pt secondary 的角标——视觉重心始终在内容上；
+/// - 动效：尺寸/层级变化统一走 smooth spring，token 流入是连续生长而非逐帧跳动。
+struct VoicePill: View {
+    @ObservedObject var state: VoiceOverlayModel
+
+    private static let cornerRadius: CGFloat = 18
+    private static let spring = Animation.spring(response: 0.32, dampingFraction: 0.85)
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
             icon
-                .frame(width: 24, height: 24)
+                .frame(width: 22, height: 22)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: subtitle == nil ? 13 : 11, weight: subtitle == nil ? .semibold : .medium))
+                    .foregroundStyle(subtitle == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                 if let subtitle {
-                    Text(subtitle)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                        .frame(maxWidth: 220, alignment: .leading)
+                    // 最多 3 行，头部截断保留最新内容
+                    HugThenWrap(maxWidth: 300) {
+                        Text(subtitle)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.primary)
+                            .lineLimit(3)
+                            .truncationMode(.head)
+                    }
                 }
             }
         }
-        .padding(.horizontal, 6)
-        .padding(.top, 6)
-        // kit 在展开内容下方固定塞 15pt safe-area，刘海样式下用负 padding 收紧；
-        // 悬浮样式的卡片四周留白对称，不需要补偿
-        .padding(.bottom, state.floatingStyle ? 6 : -6)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(HUDBackground(cornerRadius: Self.cornerRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                .strokeBorder(.primary.opacity(0.1))
+        )
+        .animation(Self.spring, value: subtitle)
+        .animation(Self.spring, value: state.phase)
     }
 
     @ViewBuilder
@@ -124,7 +245,8 @@ struct VoiceIslandExpanded: View {
         case .recording:
             Waveform(level: state.audioLevel, active: state.captureReady)
         case .preparingModel, .transcribing:
-            Spinner(floatingStyle: state.floatingStyle)
+            ProgressView()
+                .controlSize(.small)
         case .refining:
             Image(systemName: "sparkles")
                 .font(.system(size: 14, weight: .medium))
@@ -164,32 +286,22 @@ struct VoiceIslandExpanded: View {
 
     private var subtitle: String? {
         switch state.phase {
-        case .idle, .recording, .transcribing, .noSpeech: return nil
+        case .idle, .noSpeech: return nil
         case .preparingModel: return "首次使用需下载"
-        case .refining: return state.usedContext ? "已参考光标前文本" : nil
+        case .recording, .transcribing:
+            // 边说边看：流式转写文本，尾部截断保留最新内容
+            return state.liveTranscript.isEmpty ? nil : state.liveTranscript
+        case .refining:
+            // 先展示 ASR 原文，流式精修结果到达后逐步替换，等待不再是黑盒
+            if !state.liveTranscript.isEmpty { return state.liveTranscript }
+            return state.usedContext ? "已参考光标前文本" : nil
         case .done: return state.refineSkipped ? "已用识别原文" : state.finalText
         case .failed(let message): return message
         }
     }
 }
 
-/// 不确定进度圈：刘海黑底下强制深色外观让菊花变白，悬浮样式跟随系统
-struct Spinner: View {
-    var floatingStyle: Bool
-
-    var body: some View {
-        if floatingStyle {
-            ProgressView()
-                .controlSize(.small)
-        } else {
-            ProgressView()
-                .controlSize(.small)
-                .environment(\.colorScheme, .dark)
-        }
-    }
-}
-
-/// 波形：5 根圆条跟随电平。用 .primary 取当前前景色——刘海下是白、悬浮下随系统。
+/// 波形：5 根圆条跟随电平。用 .primary 跟随系统深浅色。
 /// active=false（采集未就绪）时置灰并压平——亮起即「可以开口」的视觉信号。
 struct Waveform: View {
     var level: Float

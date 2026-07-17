@@ -10,9 +10,7 @@ let package = Package(
         // 锁精确版本：0.0.x API 不稳定，升级需过一遍 Qwen3ASRBackend.swift
         .package(url: "https://github.com/ivan-digital/qwen3-asr-swift", exact: "0.0.21"),
         // 自动更新（直接分发）：feed 挂 GitHub Releases，EdDSA 签名
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
-        // 灵动岛式语音指示器（刘海 compact/expanded，无刘海机型自动降级悬浮）
-        .package(url: "https://github.com/MrKai77/DynamicNotchKit", exact: "1.1.0")
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
     targets: [
         // 轻量 XPC 层：协议 + 客户端 + 数据类型。IME 进程只依赖它（不拖 MLX）。
@@ -36,12 +34,9 @@ let package = Package(
                 .swiftLanguageMode(.v5)
             ]
         ),
-        // 共享 UI：语音会话浮层（灵动岛式）。app 与 IME 两个进程共用，保证语音反馈一致。
+        // 共享 UI：语音会话浮层（底部居中 pill）。app 与 IME 两个进程共用，保证语音反馈一致。
         .target(
             name: "AimeUI",
-            dependencies: [
-                .product(name: "DynamicNotchKit", package: "DynamicNotchKit")
-            ],
             path: "Sources/AimeUI",
             swiftSettings: [
                 .swiftLanguageMode(.v5)

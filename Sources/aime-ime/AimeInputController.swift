@@ -101,6 +101,7 @@ class AimeInputController: IMKInputController {
         voiceOverlayModel.audioLevel = 0
         voiceOverlayModel.usedContext = false
         voiceOverlayModel.captureReady = false
+        voiceOverlayModel.liveTranscript = ""
         voiceOverlay.hide()
     }
 
@@ -334,6 +335,8 @@ class AimeInputController: IMKInputController {
             bluetoothMicStrategy: BluetoothMicStrategy(rawValue: asrConfig.bluetoothMicStrategyRaw)
         )
         Self.voiceOverlayModel.captureReady = false
+        // IME 路径流式文本显示在组合区，浮层过程文本仅精修阶段用，清掉上一段残留
+        Self.voiceOverlayModel.liveTranscript = ""
         showVoiceOverlay(.recording)
         Self.daemonClient.onCaptureReady = { [weak self] inputIsBluetooth in
             DispatchQueue.main.async {
@@ -443,6 +446,8 @@ class AimeInputController: IMKInputController {
         updateMarkedText()
         let context = (contextBeforeCursor() ?? "") + confirmedText
         Self.voiceOverlayModel.usedContext = !context.isEmpty
+        // 与 app 热键路径一致：精修期间浮层先展示原文，流式结果到达后逐步替换
+        Self.voiceOverlayModel.liveTranscript = raw
         showVoiceOverlay(.refining)
         refineTask = Task { @MainActor [weak self] in
             var refined: String?
@@ -452,7 +457,13 @@ class AimeInputController: IMKInputController {
                     appName: nil,
                     textBeforeCursor: context.isEmpty ? nil : String(context.suffix(200)),
                     style: SharedConfig.refineStyle,
-                    config: config
+                    config: config,
+                    onPartial: { [weak self] partial in
+                        DispatchQueue.main.async {
+                            guard let self, self.refinePendingText == raw else { return }
+                            Self.voiceOverlayModel.liveTranscript = partial
+                        }
+                    }
                 )
             } catch {
                 if !(error is CancellationError) { NSLog("aime-ime 语音精修失败: \(error)") }
