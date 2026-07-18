@@ -1,3 +1,4 @@
+import AimePinyin
 import Foundation
 
 // LMDG 语法模型离线工具：
@@ -125,29 +126,7 @@ enum GramKey {
     }
 }
 
-// MARK: - AIMEGRM1 输出（与 AIMELEX1 同构：排序记录 + 偏移表；record = key UTF-8 + value u32LE）
-
-func writeGramBin(entries: [(key: String, value: UInt32)], to url: URL) throws {
-    let sorted = entries.sorted { $0.key.utf8.lexicographicallyPrecedes($1.key.utf8) }
-    var records = Data()
-    var offsets: [UInt32] = [0]
-    offsets.reserveCapacity(sorted.count + 1)
-    for entry in sorted {
-        records.append(Data(entry.key.utf8))
-        var value = entry.value.littleEndian
-        withUnsafeBytes(of: &value) { records.append(contentsOf: $0) }
-        offsets.append(UInt32(records.count))
-    }
-    var file = Data("AIMEGRM1".utf8)
-    var count = UInt32(sorted.count).littleEndian
-    withUnsafeBytes(of: &count) { file.append(contentsOf: $0) }
-    for offset in offsets {
-        var value = offset.littleEndian
-        withUnsafeBytes(of: &value) { file.append(contentsOf: $0) }
-    }
-    file.append(records)
-    try file.write(to: url, options: .atomic)
-}
+// AIMEGRM1 输出复用 GramModel.compile（与 AIMELEX1 同构：排序记录 + 偏移表）
 
 // MARK: - 命令行
 
@@ -165,6 +144,31 @@ guard let gram = GramFile(url: gramURL) else {
 print("双数组单元数: \(gram.unitCount)")
 
 switch command {
+case "dump":
+    // aime-gram dump <file.gram> --min-log A --max-log B [--limit n] [--prefix 串]
+    var lo: UInt32 = 0
+    var hi = UInt32.max
+    var limit = 50
+    var prefix: String?
+    var rest = Array(arguments.dropFirst(2))
+    while !rest.isEmpty {
+        let arg = rest.removeFirst()
+        switch arg {
+        case "--min-log": lo = UInt32(rest.removeFirst()) ?? 0
+        case "--max-log": hi = UInt32(rest.removeFirst()) ?? .max
+        case "--limit": limit = Int(rest.removeFirst()) ?? 50
+        case "--prefix": prefix = rest.removeFirst()
+        default: break
+        }
+    }
+    var printed = 0
+    gram.traverse { encoded, value in
+        guard printed < limit, value >= lo, value < hi, let key = GramKey.decode(encoded) else { return }
+        if let prefix, !key.hasPrefix(prefix) { return }
+        print("\(key)\t\(value)")
+        printed += 1
+    }
+
 case "stats":
     var total = 0
     var byLength = [Int: Int]()
@@ -191,12 +195,20 @@ case "convert":
     var minLog: UInt32 = 0
     var maxChars = 8
     var outPath: String?
+    // 恒值批量条目（如实体表并入的 223327）钳制：>above 的值改写为 to，再过 min-log
+    var clampAbove = UInt32.max
+    var clampTo: UInt32 = 0
+    // 冗余剪枝：len≥4 的 key，若「去掉首字的后缀」条目存在且值差 ≤ delta，长条目不提供新信息 → 删
+    var redundancyDelta: UInt32?
     var rest = Array(arguments.dropFirst(2))
     while !rest.isEmpty {
         let arg = rest.removeFirst()
         switch arg {
         case "--min-log": minLog = UInt32(rest.removeFirst()) ?? 0
         case "--max-chars": maxChars = Int(rest.removeFirst()) ?? 8
+        case "--clamp-above": clampAbove = UInt32(rest.removeFirst()) ?? .max
+        case "--clamp-to": clampTo = UInt32(rest.removeFirst()) ?? 0
+        case "--prune-delta": redundancyDelta = UInt32(rest.removeFirst())
         case "--out": outPath = rest.removeFirst()
         default:
             print("未知参数 \(arg)")
@@ -212,14 +224,29 @@ case "convert":
     let began = Date()
     gram.traverse { encoded, value in
         total += 1
-        guard value >= minLog, let key = GramKey.decode(encoded) else { return }
+        let clamped = value > clampAbove ? clampTo : value
+        guard clamped >= minLog, let key = GramKey.decode(encoded) else { return }
         // key 末尾可能是 '$'（句尾标记），字符数按汉字算
         let hanCount = key.hasSuffix("$") ? key.count - 1 : key.count
         guard hanCount <= maxChars else { return }
-        entries.append((key, value))
+        entries.append((key, clamped))
     }
     print("总条数 \(total) → 保留 \(entries.count)（min-log=\(minLog)），遍历 \(String(format: "%.1f", Date().timeIntervalSince(began)))s")
-    try writeGramBin(entries: entries, to: URL(fileURLWithPath: outPath))
+    if let delta = redundancyDelta {
+        // 值表：key → value（查询语义取的是"任意后缀命中的最高分"，所以按后缀链判冗余）
+        var valueByKey = [String: UInt32](minimumCapacity: entries.count)
+        for entry in entries { valueByKey[entry.key] = entry.value }
+        let before = entries.count
+        entries = entries.filter { entry in
+            let scalars = Array(entry.key.unicodeScalars)
+            guard scalars.count >= 4, !entry.key.hasPrefix("#"), !entry.key.hasSuffix("$") else { return true }
+            let suffix = String(String.UnicodeScalarView(scalars.dropFirst()))
+            guard let short = valueByKey[suffix] else { return true }
+            return entry.value > short ? entry.value - short > delta : short - entry.value > delta
+        }
+        print("冗余剪枝(δ=\(delta)): \(before) → \(entries.count)")
+    }
+    try GramModel.compile(entries: entries, to: URL(fileURLWithPath: outPath))
     let size = ((try? FileManager.default.attributesOfItem(atPath: outPath))?[.size] as? Int) ?? 0
     print("输出 \(outPath): \(entries.count) 条, \(String(format: "%.1f", Double(size) / 1_048_576)) MiB")
 

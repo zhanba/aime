@@ -13,6 +13,9 @@ var buildDir: String?
 var noLLM = false
 var lambdaOverride: Double?
 var dampOverride: Double?
+var gramPath: String?
+var gramWeightOverride: Double?
+var beamOverride: Int?
 
 var args = Array(CommandLine.arguments.dropFirst())
 while !args.isEmpty {
@@ -24,6 +27,9 @@ while !args.isEmpty {
     case "--no-llm": noLLM = true
     case "--lambda": lambdaOverride = Double(args.removeFirst())
     case "--char-damp": dampOverride = Double(args.removeFirst())
+    case "--gram": gramPath = args.removeFirst()
+    case "--gram-weight": gramWeightOverride = Double(args.removeFirst())
+    case "--beam": beamOverride = Int(args.removeFirst())
     default: inputs.append(arg)
     }
 }
@@ -39,11 +45,16 @@ if let buildDir {
     exit(0)
 }
 
-let engine = PinyinEngine()
+let engine = gramPath.map { PinyinEngine(gramURL: URL(fileURLWithPath: $0)) } ?? PinyinEngine()
 if let lambdaOverride { engine.lambda = lambdaOverride }
 if let dampOverride { engine.singleCharDamp = dampOverride }
+if let gramWeightOverride { engine.gramWeight = gramWeightOverride }
+if let beamOverride { engine.beamWidth = beamOverride }
 if engine.lexicon == nil {
     FileHandle.standardError.write(Data("提示: 词库未安装（--build-lexicon 编译），本地整句/词候选不可用\n".utf8))
+}
+if gramPath != nil {
+    FileHandle.standardError.write(Data("语法模型: \(engine.gram != nil ? "已加载" : "加载失败")\n".utf8))
 }
 
 let config = SharedConfig.loadLLMConfig()

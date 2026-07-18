@@ -12,17 +12,29 @@ public struct WordCandidate: Equatable, Sendable {
     public var score: Double
 }
 
-/// 本地造句：在音节假设序列上跑 Viterbi（词频 unigram + 每词惩罚 λ）。
-/// 得分 = Σ [ log(权重+1) + Σlog(音节可信度) − λ ]，兜底边保证任何输入都有完整路径。
+/// 本地造句：在音节假设序列上跑 beam Viterbi（词频 unigram + 语法搭配转移 + 每词惩罚 λ）。
+/// 得分 = Σ [ log(权重+1) + Σlog(音节可信度) − λ + gram(上文,词) ]，兜底边保证任何输入都有完整路径。
+/// gram 未安装时转移项为 0，退化为纯 unigram（与 M4 行为一致）。
 public struct SentenceComposer {
     let lexicon: Lexicon
+    /// 语法模型（万象 LMDG 剪枝版）；nil = 未安装
+    public var gram: GramModel?
+    /// 语法转移分权重（评测扫参）
+    public var gramWeight: Double
     /// 每词固定惩罚：偏向长词。评测调参（docs/algorithm.md §4.3）。
     public var lambda: Double
     /// 单字额外惩罚：抑制"高频单字串"打败整词（8105 字频与词频量纲不同）。
     public var singleCharDamp: Double
+    /// beam 宽度：每个音节位置保留的（按句面尾部去重后的）最优路径数
+    public var beamWidth = 8
 
-    public init(lexicon: Lexicon, lambda: Double = 14.0, singleCharDamp: Double = 3.0) {
+    public init(
+        lexicon: Lexicon, gram: GramModel? = nil, gramWeight: Double = 1.0,
+        lambda: Double = 14.0, singleCharDamp: Double = 3.0
+    ) {
         self.lexicon = lexicon
+        self.gram = gram
+        self.gramWeight = gramWeight
         self.lambda = lambda
         self.singleCharDamp = singleCharDamp
     }
@@ -84,19 +96,26 @@ public struct SentenceComposer {
     }
 
     /// 带总分版本：边界歧义多路径间择优用。
+    /// gram 存在时是 beam Viterbi：转移分取决于句面尾部，每个位置按尾部去重保留 beamWidth 条路径。
     public func composeScored(syllables: [Syllable]) -> (sentence: String, score: Double) {
         let count = syllables.count
         guard count > 0 else { return ("", -.infinity) }
         struct Cell {
             var score: Double
             var previous: Int
+            var previousBeam: Int
             var word: String
+            /// 句面尾部（≤ collocationMaxLength−1 字）：语法查询上下文 + beam 去重键。
+            /// 句首为 "#"（LMDG 的句首标记）。
+            var tail: String
         }
-        var dp = [Cell?](repeating: nil, count: count + 1)
-        dp[0] = Cell(score: 0, previous: 0, word: "")
+        let tailLimit = (gram?.penalties.collocationMaxLength ?? 6) - 1
+        // gram 缺失时转移分恒 0，多路径无意义：退化为经典单路径 Viterbi
+        let effectiveBeam = gram == nil ? 1 : beamWidth
+        var dp = [[Cell]](repeating: [], count: count + 1)
+        dp[0] = [Cell(score: 0, previous: 0, previousBeam: 0, word: "", tail: "#")]
 
-        for position in 0 ..< count where dp[position] != nil {
-            let base = dp[position]!.score
+        for position in 0 ..< count where !dp[position].isEmpty {
             var edges = wordMatches(syllables: syllables, from: position)
             // 兜底：该位置无任何词（如 partial 尾巴）→ 音节原文透传
             if !edges.contains(where: { $0.syllableCount == 1 }) {
@@ -105,24 +124,63 @@ public struct SentenceComposer {
                     typedLength: syllables[position].typed.count, score: -30
                 ))
             }
+            // beam > 1 时边数直接乘进转移查询量：每个词长档只留 unigram 前几名。
+            // （不同词长的 edge.score 不可比——长词省 λ——所以按档剪而不是全局剪。）
+            if effectiveBeam > 1 {
+                var byLength = [Int: Int]()
+                edges = edges.filter { edge in
+                    byLength[edge.syllableCount, default: 0] += 1
+                    return byLength[edge.syllableCount]! <= 6
+                }
+            }
             for edge in edges {
                 let target = position + edge.syllableCount
                 guard target <= count else { continue }
                 let damp = edge.syllableCount == 1 ? singleCharDamp : 0
-                let score = base + edge.score - lambda - damp
-                if dp[target] == nil || score > dp[target]!.score {
-                    dp[target] = Cell(score: score, previous: position, word: edge.word)
+                for (beamIndex, cell) in dp[position].enumerated() {
+                    var transition = 0.0
+                    if let gram {
+                        transition = gramWeight * gram.score(
+                            context: cell.tail, word: edge.word, isRear: target == count
+                        )
+                    }
+                    let score = cell.score + edge.score - lambda - damp + transition
+                    let tail = String((cell.tail + edge.word).suffix(tailLimit))
+                    // 按尾部去重：同尾部只留最高分（后续转移分只看尾部，低分同尾必然被支配）
+                    if let existing = dp[target].firstIndex(where: { $0.tail == tail }) {
+                        if dp[target][existing].score < score {
+                            dp[target][existing] = Cell(
+                                score: score, previous: position, previousBeam: beamIndex,
+                                word: edge.word, tail: tail
+                            )
+                        }
+                    } else {
+                        dp[target].append(Cell(
+                            score: score, previous: position, previousBeam: beamIndex,
+                            word: edge.word, tail: tail
+                        ))
+                    }
                 }
+            }
+            // 每个目标位置的 beam 截断推迟到该位置被展开前：这里只截当前已满的
+            for target in (position + 1) ... count where dp[target].count > effectiveBeam {
+                dp[target].sort { $0.score > $1.score }
+                dp[target].removeLast(dp[target].count - effectiveBeam)
             }
         }
 
+        guard let bestFinal = dp[count].indices.max(by: { dp[count][$0].score < dp[count][$1].score })
+        else { return ("", -.infinity) }
         var words: [String] = []
         var cursor = count
-        while cursor > 0, let cell = dp[cursor] {
+        var beam = bestFinal
+        while cursor > 0 {
+            let cell = dp[cursor][beam]
             words.append(cell.word)
+            beam = cell.previousBeam
             cursor = cell.previous
         }
-        return (words.reversed().joined(), dp[count]?.score ?? -.infinity)
+        return (words.reversed().joined(), dp[count][bestFinal].score)
     }
 }
 
@@ -133,10 +191,11 @@ public final class PinyinEngine {
     public static let shared = PinyinEngine()
 
     public private(set) var lexicon: Lexicon?
+    public private(set) var gram: GramModel?
     private var composer: SentenceComposer?
 
-    public init(lexiconURL: URL = Lexicon.defaultURL) {
-        reloadLexicon(from: lexiconURL)
+    public init(lexiconURL: URL = Lexicon.defaultURL, gramURL: URL = GramModel.defaultURL) {
+        reloadLexicon(from: lexiconURL, gramURL: gramURL)
     }
 
     /// 调参入口（CLI 扫参用）。默认 λ=14/damp=3 来自 20 句测试集扫参（70% 本地命中）
@@ -146,22 +205,41 @@ public final class PinyinEngine {
     public var singleCharDamp: Double = 3.0 {
         didSet { composer?.singleCharDamp = singleCharDamp }
     }
-
-    private var lexiconURL = Lexicon.defaultURL
-    private var loadedMTime: Date?
-
-    public func reloadLexicon(from url: URL = Lexicon.defaultURL) {
-        lexiconURL = url
-        lexicon = Lexicon(url: url)
-        loadedMTime = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
-        composer = lexicon.map { SentenceComposer(lexicon: $0, lambda: lambda, singleCharDamp: singleCharDamp) }
+    /// 语法转移分权重（gram 未安装时无效果）
+    public var gramWeight: Double = 1.0 {
+        didSet { composer?.gramWeight = gramWeight }
+    }
+    /// beam 宽度（gram 未安装时恒为 1）
+    public var beamWidth: Int = 8 {
+        didSet { composer?.beamWidth = beamWidth }
     }
 
-    /// 词库文件被（另一进程）更新或删除后热重载。IME 在 activateServer 时调用，stat 一次开销可忽略。
+    private var lexiconURL = Lexicon.defaultURL
+    private var gramURL = GramModel.defaultURL
+    private var loadedMTime: Date?
+    private var loadedGramMTime: Date?
+
+    public func reloadLexicon(from url: URL = Lexicon.defaultURL, gramURL: URL = GramModel.defaultURL) {
+        lexiconURL = url
+        self.gramURL = gramURL
+        lexicon = Lexicon(url: url)
+        gram = GramModel(url: gramURL)
+        loadedMTime = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
+        loadedGramMTime = (try? FileManager.default.attributesOfItem(atPath: gramURL.path)[.modificationDate]) as? Date
+        composer = lexicon.map {
+            SentenceComposer(
+                lexicon: $0, gram: gram, gramWeight: gramWeight,
+                lambda: lambda, singleCharDamp: singleCharDamp
+            )
+        }
+    }
+
+    /// 词库/语法模型文件被（另一进程）更新或删除后热重载。IME 在 activateServer 时调用，stat 开销可忽略。
     public func reloadIfChanged() {
         let mtime = (try? FileManager.default.attributesOfItem(atPath: lexiconURL.path)[.modificationDate]) as? Date
-        if mtime != loadedMTime {
-            reloadLexicon(from: lexiconURL)
+        let gramMTime = (try? FileManager.default.attributesOfItem(atPath: gramURL.path)[.modificationDate]) as? Date
+        if mtime != loadedMTime || gramMTime != loadedGramMTime {
+            reloadLexicon(from: lexiconURL, gramURL: gramURL)
         }
     }
 
