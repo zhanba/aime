@@ -811,7 +811,10 @@ class AimeInputController: IMKInputController {
         }
         var list: [Candidate] = []
         if !rawBuffer.isEmpty {
-            if llmFresh, let conversion = llmConversion {
+            // 简拼领先时（纯声母串，解析靠纠错硬修）AI/整句都基于垃圾切分（nh→"路"），
+            // 让位给简拼词：AI 后置到词候选之后，整句不展示
+            let abbrLeads = engineResult?.wordCandidates.first?.isAbbreviation == true
+            if !abbrLeads, llmFresh, let conversion = llmConversion {
                 switch llmVerdict {
                 case .pass:
                     list.append(Candidate(text: conversion.best, kind: .llmBest, typedLength: nil))
@@ -823,21 +826,31 @@ class AimeInputController: IMKInputController {
                     break
                 }
             }
-            if let local = engineResult?.localSentence, !list.contains(where: { $0.text == local }) {
+            if !abbrLeads, let local = engineResult?.localSentence,
+               !list.contains(where: { $0.text == local }) {
                 list.append(Candidate(text: local, kind: .localSentence, typedLength: nil))
             }
             var emojiBudget = 2
-            for word in engineResult?.wordCandidates.prefix(16) ?? [] where !list.contains(where: { $0.text == word.word }) {
-                list.append(Candidate(text: word.word, kind: .word, typedLength: word.typedLength))
-                // 命中 emoji 表的词后面跟 emoji 候选（消耗与词相同的按键）
+            for word in engineResult?.wordCandidates.prefix(16) ?? [] {
+                // 词本身可能与 AI/整句候选重复而不再展示，但 emoji 仍要出
+                // （weixiao 的"微笑"通常正是 AI 首选——emoji 挂在词条目上会被去重连坐）
+                if !list.contains(where: { $0.text == word.word }) {
+                    list.append(Candidate(text: word.word, kind: .word, typedLength: word.typedLength))
+                }
                 if emojiBudget > 0 {
-                    for emoji in EmojiTable.emojis(for: word.word).prefix(emojiBudget) {
+                    for emoji in EmojiTable.emojis(for: word.word).prefix(emojiBudget)
+                    where !list.contains(where: { $0.text == emoji }) {
                         list.append(Candidate(text: emoji, kind: .emoji, typedLength: word.typedLength))
                         emojiBudget -= 1
                     }
                 }
             }
             if llmFresh, llmVerdict == .demote, let best = llmConversion?.best {
+                list.append(Candidate(text: best, kind: .llmBest, typedLength: nil))
+            }
+            // 简拼领先时后置的 AI 候选（过验才展示）
+            if abbrLeads, llmFresh, llmVerdict == .pass, let best = llmConversion?.best,
+               !list.contains(where: { $0.text == best }) {
                 list.append(Candidate(text: best, kind: .llmBest, typedLength: nil))
             }
             list.append(Candidate(text: rawBuffer, kind: .raw, typedLength: nil))

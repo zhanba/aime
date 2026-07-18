@@ -93,4 +93,12 @@ public final class UserDictionary {
     public func topEntries(_ limit: Int = 24) -> [String] {
         Array(allEntries.prefix(limit).map(\.text))
     }
+
+    /// 单词的衰减评分（未记录返回 0）。候选个性化加权用。
+    public func score(of text: String) -> Double {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = entries[text] else { return 0 }
+        return Self.decayedScore(entry)
+    }
 }

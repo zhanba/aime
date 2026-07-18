@@ -10,6 +10,8 @@ public struct WordCandidate: Equatable, Sendable {
     public var typedLength: Int
     /// 排序得分（log 词频 + 变换可信度）
     public var score: Double
+    /// 来自简拼索引（nh→你好）而非全拼解析
+    public var isAbbreviation = false
 }
 
 /// 本地造句：在音节假设序列上跑 beam Viterbi（词频 unigram + 语法搭配转移 + 每词惩罚 λ）。
@@ -288,13 +290,18 @@ public final class PinyinEngine {
         if raw.count >= 2, raw.count <= 8, raw.allSatisfy({ $0.isLowercase && $0.isLetter }),
            let lexicon {
             abbrCandidates = lexicon.abbrMatches(key: raw, limit: 8).map { entry in
-                WordCandidate(
+                // 词频 + 用户习惯：选过的简拼词排前（nh→你好 靠一次选择学会，
+                // 白霜里"你会"频次反而更高——完整表达的偏好只能来自用户）
+                let userBoost = 2 * log(1 + UserDictionary.shared.score(of: entry.word))
+                return WordCandidate(
                     word: entry.word,
                     syllableCount: entry.key.split(separator: " ").count,
                     typedLength: raw.count,
-                    score: log(entry.weight + 1)
+                    score: log(entry.weight + 1) + userBoost,
+                    isAbbreviation: true
                 )
             }
+            .sorted { $0.score > $1.score }
         }
 
         // 词候选：第一个拼音段的起点（活动段），主切分 + 边界变体合并
