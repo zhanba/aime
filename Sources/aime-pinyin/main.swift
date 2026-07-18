@@ -70,17 +70,45 @@ if let suitePath {
     var localCorrect = 0
     var covered = 0
     var latencies: [Double] = []
+    // 字准率累计：Σ(期望长 − 编辑距离) / Σ期望长
+    var localCharHit = 0
+    var llmCharHit = 0
+    var charTotal = 0
     let normalize = { (s: String) in
         s.replacingOccurrences(of: " ", with: "")
             .trimmingCharacters(in: CharacterSet(charactersIn: "。，！？.,!?"))
+    }
+    func editDistance(_ a: [Character], _ b: [Character]) -> Int {
+        var previous = Array(0 ... b.count)
+        for i in 1 ... max(a.count, 1) where !a.isEmpty {
+            var current = [i] + [Int](repeating: 0, count: b.count)
+            for j in 1 ... max(b.count, 1) where !b.isEmpty {
+                current[j] = min(
+                    previous[j] + 1, current[j - 1] + 1,
+                    previous[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1)
+                )
+            }
+            previous = current
+        }
+        return a.isEmpty ? b.count : (b.isEmpty ? a.count : previous[b.count])
+    }
+    // 命中字数 = 期望长 − 编辑距离（截断到 0）
+    func charHits(_ got: String?, expected: String) -> Int {
+        let expectedChars = Array(normalize(expected))
+        guard let got else { return 0 }
+        return max(0, expectedChars.count - editDistance(Array(normalize(got)), expectedChars))
     }
     for (index, testCase) in cases.enumerated() {
         // 本地整句命中（词库层底线质量）
         let local: String? = engine.analyze(testCase.pinyin, fuzzyRuleIDs: config.enabledFuzzyRuleIDs).localSentence
         let localHit = local.map { normalize($0) == normalize(testCase.expected) } ?? false
         if localHit { localCorrect += 1 }
+        charTotal += normalize(testCase.expected).count
+        localCharHit += charHits(local, expected: testCase.expected)
         if noLLM {
-            print("[\(index + 1)/\(cases.count)] \(localHit ? "✓" : "✗") 本地: \(local ?? "-")  期望: \(testCase.expected)")
+            if !localHit {
+                print("[\(index + 1)/\(cases.count)] ✗ 本地: \(local ?? "-")  期望: \(testCase.expected)")
+            }
             continue
         }
         let began = Date()
@@ -92,6 +120,7 @@ if let suitePath {
             latencies.append(cost)
             let hit = normalize(conversion.best) == normalize(testCase.expected)
             if hit { correct += 1 }
+            llmCharHit += charHits(conversion.best, expected: testCase.expected)
             // 句级覆盖：首选/备选/本地整句 任一命中
             var sentenceCandidates = [conversion.best]
             if let alternative = conversion.alternative { sentenceCandidates.append(alternative) }
@@ -111,10 +140,16 @@ if let suitePath {
     let sorted = latencies.sorted()
     print("\n===== 汇总 =====")
     if engine.lexicon != nil {
-        print("本地整句命中率: \(localCorrect)/\(cases.count) (\(String(format: "%.0f%%", Double(localCorrect) / Double(cases.count) * 100)))")
+        print("本地整句命中率: \(localCorrect)/\(cases.count) (\(String(format: "%.1f%%", Double(localCorrect) / Double(cases.count) * 100)))")
+        if charTotal > 0 {
+            print("本地字准率: \(localCharHit)/\(charTotal) (\(String(format: "%.1f%%", Double(localCharHit) / Double(charTotal) * 100)))")
+        }
     }
     if noLLM { exit(0) }
     print("首选准确率: \(correct)/\(cases.count) (\(String(format: "%.0f%%", Double(correct) / Double(cases.count) * 100)))")
+    if charTotal > 0 {
+        print("首选字准率: \(llmCharHit)/\(charTotal) (\(String(format: "%.1f%%", Double(llmCharHit) / Double(charTotal) * 100)))")
+    }
     print("句级候选覆盖率: \(covered)/\(cases.count) (\(String(format: "%.0f%%", Double(covered) / Double(cases.count) * 100)))")
     if !sorted.isEmpty {
         print(String(format: "延迟: p50=%.2fs p90=%.2fs", sorted[sorted.count / 2], sorted[min(sorted.count - 1, sorted.count * 9 / 10)]))

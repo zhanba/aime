@@ -86,6 +86,16 @@ let package = Package(
                 .swiftLanguageMode(.v5)
             ]
         ),
+        // 语法模型离线工具：LMDG .gram（octagram/darts-clone 格式）→ 剪枝 → 自有 gram.bin。
+        // 仅开发/发布流程使用，不进 app 包。
+        .executableTarget(
+            name: "aime-gram",
+            dependencies: ["AimePinyin"],
+            path: "Sources/aime-gram",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
         // 拼音评测 CLI：swift run aime-pinyin <input> / --suite testdata/pinyin_testset.tsv
         .executableTarget(
             name: "aime-pinyin",
