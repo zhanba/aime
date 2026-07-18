@@ -56,6 +56,18 @@ final class GramModelTests: XCTestCase {
         XCTAssertEqual(start, 13.0 + gram.penalties.collocation, accuracy: 0.001)
     }
 
+    func testCompletions() throws {
+        let gram = try XCTUnwrap(GramModel(url: gramURL))
+        // "养了一只" 尾部 2 字 = "一只" → 前缀区间命中 一只小/一只小狗 → 后继 小/小狗
+        let words = gram.completions(context: "养了一只")
+        XCTAssertTrue(words.contains("小"), "\(words)")
+        XCTAssertTrue(words.contains("小狗"), "\(words)")
+        // '$' 句尾条目不出现在联想里（世界$ 的后继是 "$"，被滤掉）
+        XCTAssertFalse(gram.completions(context: "新世界").contains("$"))
+        // 无命中上下文
+        XCTAssertTrue(gram.completions(context: "苹果").isEmpty)
+    }
+
     func testMissingFileReturnsNil() {
         XCTAssertNil(GramModel(url: gramURL.deletingLastPathComponent().appendingPathComponent("absent.bin")))
     }

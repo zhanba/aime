@@ -7,6 +7,7 @@ struct PinyinSettingsTab: View {
     @ObservedObject private var lexicon = LexiconInstaller.shared
     @ObservedObject private var gram = GramInstaller.shared
     @State private var imeInstalled = IMEInstaller.isInstalled
+    @State private var chinesePunctuation = SharedConfig.chinesePunctuation
     @State private var installMessage: String?
     @State private var installFailed = false
 
@@ -32,6 +33,13 @@ struct PinyinSettingsTab: View {
                 Text("语法模型")
             } footer: {
                 Text("词语搭配知识，大幅提升整句准确率。数据来自万象拼音 LMDG（CC-BY-4.0）。")
+            }
+
+            Section("输入") {
+                Toggle("中文标点", isOn: $chinesePunctuation)
+                    .onChange(of: chinesePunctuation) { _, enabled in
+                        SharedConfig.mirrorChinesePunctuation(enabled)
+                    }
             }
 
             Section("模糊音") {

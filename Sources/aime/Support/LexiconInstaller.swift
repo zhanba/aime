@@ -28,18 +28,21 @@ final class LexiconInstaller: ObservableObject {
         refresh()
     }
 
+    private var needsFormatUpgrade = false
+
     func refresh() {
         guard let lexicon = Lexicon() else {
             installedInfo = nil
             return
         }
+        needsFormatUpgrade = lexicon.isLegacyFormat
         let size = (try? Lexicon.defaultURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         installedInfo = "已安装 \(lexicon.entryCount) 词条（\(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))）"
     }
 
-    /// 首启自动补齐：未安装才下载，失败不重试（设置页可手动重试）
+    /// 首启自动补齐：未安装才下载；旧格式（无简拼段）自动重编译
     func installIfNeeded() {
-        guard installedInfo == nil else { return }
+        guard installedInfo == nil || needsFormatUpgrade else { return }
         install()
     }
 

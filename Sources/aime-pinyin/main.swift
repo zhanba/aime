@@ -16,6 +16,7 @@ var dampOverride: Double?
 var gramPath: String?
 var gramWeightOverride: Double?
 var beamOverride: Int?
+var predictMode = false
 
 var args = Array(CommandLine.arguments.dropFirst())
 while !args.isEmpty {
@@ -28,6 +29,7 @@ while !args.isEmpty {
     case "--lambda": lambdaOverride = Double(args.removeFirst())
     case "--char-damp": dampOverride = Double(args.removeFirst())
     case "--gram": gramPath = args.removeFirst()
+    case "--predict": predictMode = true
     case "--gram-weight": gramWeightOverride = Double(args.removeFirst())
     case "--beam": beamOverride = Int(args.removeFirst())
     default: inputs.append(arg)
@@ -63,6 +65,18 @@ let converter = PinyinConverter()
 func analyze(_ raw: String) -> [PinyinSegment] {
     let segments = PinyinSegmenter.segment(raw, enabledFuzzyRuleIDs: config.enabledFuzzyRuleIDs)
     return segments
+}
+
+// 联想调试：aime-pinyin --predict <中文上下文...>
+if predictMode {
+    guard engine.gram != nil else {
+        print("语法模型未安装")
+        exit(1)
+    }
+    for context in inputs {
+        print("\(context) → \(engine.predictions(context: context).joined(separator: " | "))")
+    }
+    exit(0)
 }
 
 if let suitePath {

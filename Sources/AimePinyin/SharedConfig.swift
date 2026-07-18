@@ -75,6 +75,24 @@ public enum SharedConfig {
         defaults.object(forKey: "compositionShowsPinyin") as? Bool ?? true
     }
 
+    /// 中文标点（默认开）。关闭后标点键原样上屏（写代码/英文场景）。
+    public static var chinesePunctuation: Bool {
+        defaults.object(forKey: "chinesePunctuation") as? Bool ?? true
+    }
+
+    /// 词组联想（默认关，无 UI）。LMDG 搭配值跨条目不可比、无词边界，联想质量未达上线标准；
+    /// 基建保留，等词级 bigram 数据源（自建统计或用户历史）就绪后再默认开。
+    /// 开发自用：defaults write <suite> predictionEnabled -bool true
+    public static var predictionEnabled: Bool {
+        defaults.object(forKey: "predictionEnabled") as? Bool ?? false
+    }
+
+    public static func mirrorChinesePunctuation(_ enabled: Bool) {
+        if chinesePunctuation != enabled {
+            defaults.set(enabled, forKey: "chinesePunctuation")
+        }
+    }
+
     public static func mirrorCompositionDisplay(showsPinyin: Bool) {
         if compositionShowsPinyin != showsPinyin {
             defaults.set(showsPinyin, forKey: "compositionShowsPinyin")

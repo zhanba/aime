@@ -8,6 +8,7 @@ import InputMethodKit
 private struct Candidate {
     enum Kind {
         case llmBest, llmAlternative, localSentence, word, raw
+        case emoji, prediction
         case translation, translationSource
     }
 
@@ -23,7 +24,7 @@ private struct Candidate {
         case .raw: return "原"
         case .translation: return "译"
         case .translationSource: return "原"
-        case .word: return ""
+        case .word, .emoji, .prediction: return ""
         }
     }
 }
@@ -124,6 +125,11 @@ class AimeInputController: IMKInputController {
 
     private var lastCommit: CommitRecord?
 
+    // 联想态：上屏后候选栏显示后继词预测（组合区为空）。
+    // 数字/空格选中追加上屏并连续联想；打字/Esc/翻页外的其他键退出。
+    private var predicting = false
+    private var predictionContext = ""
+
     private var confirmedText: String {
         confirmedStack.map(\.text).joined()
     }
@@ -151,8 +157,9 @@ class AimeInputController: IMKInputController {
             Self.dismissVoiceOverlay()
         }
         settleRefineNow()
+        exitPrediction()
         if !confirmedText.isEmpty || !rawBuffer.isEmpty {
-            commitFinal(confirmedText + rawBuffer)
+            commitFinal(confirmedText + rawBuffer, predictAfter: false)
         }
         Self.bar.hide()
     }
@@ -203,14 +210,28 @@ class AimeInputController: IMKInputController {
         if !isComposing {
             // 回改：Shift+Space 在非组合态把刚上屏的内容拉回 composition
             if event.keyCode == 49, event.modifierFlags.contains(.shift) {
+                exitPrediction()
                 return recallLastCommit()
+            }
+            // 联想态：数字选词；Esc 收起；其余按键先退出联想再照常处理
+            if predicting {
+                if characters.count == 1, let digit = characters.first?.wholeNumberValue,
+                   (1 ... 9).contains(digit), !candidates.isEmpty {
+                    selectCandidate(at: page * Self.pageSize + digit - 1)
+                    return true
+                }
+                if event.keyCode == 53 {
+                    exitPrediction()
+                    return true
+                }
+                exitPrediction()
             }
             if characters.count == 1, characters.first!.isLowercaseLatin {
                 rawBuffer = characters
                 refresh()
                 return true
             }
-            if let mapped = Self.punctuationMap[characters] {
+            if let mapped = Self.punctuationMap[characters], SharedConfig.chinesePunctuation {
                 client()?.insertText(mapped, replacementRange: Self.replacementRange)
                 return true
             }
@@ -268,8 +289,22 @@ class AimeInputController: IMKInputController {
                 refresh()
                 return true
             }
-            if let mapped = Self.punctuationMap[characters] {
-                commitFinal(confirmedText + currentPreview + mapped)
+            if Self.punctuationMap[characters] != nil {
+                // 全字面串（code/url/邮箱，无任何拼音音节）：标点续入 buffer 保持可编辑
+                let allLiteral = engineResult?.segments.allSatisfy {
+                    if case .literal = $0.kind { return true }
+                    return false
+                } ?? false
+                if allLiteral, !rawBuffer.isEmpty {
+                    rawBuffer.append(char)
+                    refresh()
+                    return true
+                }
+                if SharedConfig.chinesePunctuation {
+                    commitFinal(confirmedText + currentPreview + Self.punctuationMap[characters]!)
+                } else {
+                    commitFinal(confirmedText + currentPreview + characters)
+                }
                 return true
             }
         }
@@ -644,6 +679,8 @@ class AimeInputController: IMKInputController {
         confirmedStack = []
         clearActiveBuffer()
         clearTranslation()
+        predicting = false
+        predictionContext = ""
         candidates = []
         highlighted = 0
         page = 0
@@ -660,7 +697,8 @@ class AimeInputController: IMKInputController {
     }
 
     /// recordLearning=false 用于提交译文：整句英文抽词会污染用户词库（满是 the/have 类常用词）
-    private func commitFinal(_ text: String, recordLearning: Bool = true) {
+    /// predictAfter=false 用于失焦提交（deactivateServer）：切走时不能弹联想栏
+    private func commitFinal(_ text: String, recordLearning: Bool = true, predictAfter: Bool = true) {
         if !text.isEmpty, let client = client() {
             let stackSnapshot = confirmedStack
             let bufferSnapshot = rawBuffer
@@ -673,6 +711,41 @@ class AimeInputController: IMKInputController {
             if recordLearning { learn(text) }
         }
         resetAll()
+        if predictAfter, recordLearning, !text.isEmpty {
+            enterPrediction(context: text)
+        }
+    }
+
+    // MARK: - 联想（上屏后预测下一词）
+
+    private func enterPrediction(context: String) {
+        guard SharedConfig.predictionEnabled else { return }
+        guard let last = context.unicodeScalars.last, last.properties.isIdeographic else { return }
+        let words = PinyinEngine.shared.predictions(context: context)
+        guard !words.isEmpty else { return }
+        predicting = true
+        predictionContext = context
+        candidates = words.map { Candidate(text: $0, kind: .prediction, typedLength: nil) }
+        highlighted = 0
+        page = 0
+        showBar()
+    }
+
+    private func commitPrediction(_ text: String) {
+        client()?.insertText(text, replacementRange: Self.replacementRange)
+        let context = predictionContext + text
+        exitPrediction()
+        enterPrediction(context: context)  // 连续联想
+    }
+
+    private func exitPrediction() {
+        guard predicting else { return }
+        predicting = false
+        predictionContext = ""
+        candidates = []
+        highlighted = 0
+        page = 0
+        Self.bar.hide()
     }
 
     // MARK: - 回改（P4）
@@ -753,8 +826,16 @@ class AimeInputController: IMKInputController {
             if let local = engineResult?.localSentence, !list.contains(where: { $0.text == local }) {
                 list.append(Candidate(text: local, kind: .localSentence, typedLength: nil))
             }
+            var emojiBudget = 2
             for word in engineResult?.wordCandidates.prefix(16) ?? [] where !list.contains(where: { $0.text == word.word }) {
                 list.append(Candidate(text: word.word, kind: .word, typedLength: word.typedLength))
+                // 命中 emoji 表的词后面跟 emoji 候选（消耗与词相同的按键）
+                if emojiBudget > 0 {
+                    for emoji in EmojiTable.emojis(for: word.word).prefix(emojiBudget) {
+                        list.append(Candidate(text: emoji, kind: .emoji, typedLength: word.typedLength))
+                        emojiBudget -= 1
+                    }
+                }
             }
             if llmFresh, llmVerdict == .demote, let best = llmConversion?.best {
                 list.append(Candidate(text: best, kind: .llmBest, typedLength: nil))
@@ -768,7 +849,7 @@ class AimeInputController: IMKInputController {
     }
 
     private func showBar() {
-        guard isComposing, !candidates.isEmpty || !barHint.isEmpty else {
+        guard isComposing || predicting, !candidates.isEmpty || !barHint.isEmpty else {
             Self.bar.hide()
             return
         }
@@ -821,8 +902,10 @@ class AimeInputController: IMKInputController {
             commitFinal(candidate.text, recordLearning: false)
         case .translationSource:
             commitFinal(candidate.text)
-        case .word:
+        case .word, .emoji:
             partialConfirm(candidate)
+        case .prediction:
+            commitPrediction(candidate.text)
         }
     }
 

@@ -57,12 +57,17 @@ public enum PinyinVerifier {
     /// 纯中文文本 → 无声调拼音串（多音字取默认读音；含非汉字返回 nil）。
     /// 跨模态纠错 v1 的入口：语音文本反推拼音后，整套拼音机器直接可用。
     public static func derivePinyin(from text: String) -> String? {
-        var result = ""
+        derivePinyinSyllables(from: text)?.joined()
+    }
+
+    /// 逐字读音（音节数组，词库 key 用空格 join）。含非汉字或未知字返回 nil。
+    public static func derivePinyinSyllables(from text: String) -> [String]? {
+        var result: [String] = []
         for char in text {
             guard char.isChineseCharacter, let reading = readings(of: char).first else {
                 return nil
             }
-            result += reading
+            result.append(reading)
         }
         return result.isEmpty ? nil : result
     }

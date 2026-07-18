@@ -4,10 +4,14 @@ import Foundation
 ///
 /// 文件格式（lexicon.bin）：
 /// ```
-/// magic "AIMELEX1" (8B) | entryCount u32 | offsets u32×(n+1) | records
+/// magic "AIMELEX2" (8B) | entryCount u32 | offsets u32×(n+1) | records
+///   | abbrCount u32 | abbrOffsets u32×(m+1) | abbrRecords
 /// record = "音节序列(空格分隔)\t词\t权重十进制" UTF-8，按 key 字典序排（同 key 按权重逆序）
+/// abbrRecord = 简拼串 UTF-8 + u32LE 主记录下标，按 (简拼串, 权重降序) 排——
+///   简拼查询即前缀区间顺序扫描，天然按权重出词
 /// ```
 /// key 全 ASCII，字节序即字典序；排序数组即隐式 trie，前缀区间 = 两次二分。
+/// 兼容读旧 AIMELEX1（无简拼段，abbrMatches 返回空）；App 启动检查到旧格式会自动重编译。
 public final class Lexicon {
     public struct Entry: Sendable {
         public var key: String     // "jin tian"
@@ -19,6 +23,12 @@ public final class Lexicon {
     private let offsets: [UInt32]
     private let recordsBase: Int
     public let entryCount: Int
+    /// 简拼段（AIMELEX1 旧文件无此段：count=0）
+    private let abbrOffsets: [UInt32]
+    private let abbrRecordsBase: Int
+    public let abbrCount: Int
+    /// 是否旧格式（提示上层重编译）
+    public let isLegacyFormat: Bool
 
     public static var defaultURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -29,9 +39,10 @@ public final class Lexicon {
     /// mmap 加载（毫秒级，不解析全部词条）。文件不存在/损坏返回 nil。
     public init?(url: URL = Lexicon.defaultURL) {
         guard let data = try? Data(contentsOf: url, options: .alwaysMapped),
-              data.count > 12,
-              data.prefix(8) == Data("AIMELEX1".utf8)
+              data.count > 12
         else { return nil }
+        let isLegacy = data.prefix(8) == Data("AIMELEX1".utf8)
+        guard isLegacy || data.prefix(8) == Data("AIMELEX2".utf8) else { return nil }
         let count = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self) }
         let entryCount = Int(UInt32(littleEndian: count))
         let offsetsEnd = 12 + (entryCount + 1) * 4
@@ -46,6 +57,32 @@ public final class Lexicon {
         self.offsets = offsets
         self.recordsBase = offsetsEnd
         self.entryCount = entryCount
+        self.isLegacyFormat = isLegacy
+
+        // 简拼段（紧跟主记录之后）
+        let recordsEnd = offsetsEnd + Int(offsets[entryCount])
+        if !isLegacy, data.count >= recordsEnd + 4 {
+            let abbrCountRaw = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: recordsEnd, as: UInt32.self) }
+            let abbrCount = Int(UInt32(littleEndian: abbrCountRaw))
+            let abbrOffsetsEnd = recordsEnd + 4 + (abbrCount + 1) * 4
+            if abbrCount > 0, data.count > abbrOffsetsEnd {
+                var abbrOffsets = [UInt32](repeating: 0, count: abbrCount + 1)
+                data.withUnsafeBytes { raw in
+                    for index in 0 ... abbrCount {
+                        abbrOffsets[index] = UInt32(littleEndian: raw.loadUnaligned(
+                            fromByteOffset: recordsEnd + 4 + index * 4, as: UInt32.self
+                        ))
+                    }
+                }
+                self.abbrOffsets = abbrOffsets
+                self.abbrRecordsBase = abbrOffsetsEnd
+                self.abbrCount = abbrCount
+                return
+            }
+        }
+        self.abbrOffsets = [0]
+        self.abbrRecordsBase = 0
+        self.abbrCount = 0
     }
 
     // MARK: - 查询
@@ -96,6 +133,67 @@ public final class Lexicon {
         var results: [Entry] = []
         while index < entryCount, keyBytes(of: index) == target {
             if let entry = entry(at: index) {
+                results.append(entry)
+            }
+            index += 1
+        }
+        return results
+    }
+
+    // MARK: - 简拼
+
+    /// 音节 → 简拼字母（声母首字母；零声母取韵母首字母）
+    static func abbrLetter(of syllable: String) -> String {
+        String(syllable.prefix(1))
+    }
+
+    /// 词条 key 的简拼变体：首字母版必有；含 zh/ch/sh 的再加全翘舌版（"zhsh" 风格）
+    static func abbrKeys(for syllables: [Substring]) -> [String] {
+        var primary = ""
+        var retroflex = ""
+        var differs = false
+        for syllable in syllables {
+            primary += syllable.prefix(1)
+            if syllable.hasPrefix("zh") || syllable.hasPrefix("ch") || syllable.hasPrefix("sh") {
+                retroflex += syllable.prefix(2)
+                differs = true
+            } else {
+                retroflex += syllable.prefix(1)
+            }
+        }
+        return differs ? [primary, retroflex] : [primary]
+    }
+
+    private func abbrKeyBytes(of index: Int) -> Data {
+        let start = abbrRecordsBase + Int(abbrOffsets[index])
+        let end = abbrRecordsBase + Int(abbrOffsets[index + 1]) - 4
+        return data[start ..< end]
+    }
+
+    private func abbrEntryIndex(of index: Int) -> Int {
+        let end = abbrRecordsBase + Int(abbrOffsets[index + 1])
+        let raw = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: end - 4, as: UInt32.self) }
+        return Int(UInt32(littleEndian: raw))
+    }
+
+    /// 简拼精确匹配（"nh" → 你好/内河/…），已按权重降序，最多 limit 条
+    public func abbrMatches(key: String, limit: Int = 24) -> [Entry] {
+        guard abbrCount > 0 else { return [] }
+        let target = Data(key.utf8)
+        var low = 0
+        var high = abbrCount
+        while low < high {
+            let mid = (low + high) / 2
+            if abbrKeyBytes(of: mid).lexicographicallyPrecedes(target) {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        var results: [Entry] = []
+        var index = low
+        while index < abbrCount, results.count < limit, abbrKeyBytes(of: index) == target {
+            if let entry = entry(at: abbrEntryIndex(of: index)) {
                 results.append(entry)
             }
             index += 1
@@ -171,7 +269,34 @@ public final class Lexicon {
             offsets.append(UInt32(records.count))
         }
 
-        var file = Data("AIMELEX1".utf8)
+        // 简拼段：≥2 音节的词生成首字母 key（含 zh/ch/sh 变体），按 (key, 权重降序) 排
+        struct AbbrRow {
+            var key: String
+            var entryIndex: UInt32
+            var weight: Double
+        }
+        var abbrRows: [AbbrRow] = []
+        for (index, row) in rows.enumerated() {
+            let syllables = row.key.split(separator: " ")
+            guard syllables.count >= 2, syllables.count <= 8 else { continue }
+            for abbrKey in abbrKeys(for: syllables) {
+                abbrRows.append(AbbrRow(key: abbrKey, entryIndex: UInt32(index), weight: row.weight))
+            }
+        }
+        abbrRows.sort {
+            $0.key == $1.key ? $0.weight > $1.weight : $0.key < $1.key
+        }
+        var abbrRecords = Data()
+        var abbrOffsets: [UInt32] = [0]
+        abbrOffsets.reserveCapacity(abbrRows.count + 1)
+        for row in abbrRows {
+            abbrRecords.append(Data(row.key.utf8))
+            var entryIndex = row.entryIndex.littleEndian
+            withUnsafeBytes(of: &entryIndex) { abbrRecords.append(contentsOf: $0) }
+            abbrOffsets.append(UInt32(abbrRecords.count))
+        }
+
+        var file = Data("AIMELEX2".utf8)
         var count = UInt32(rows.count).littleEndian
         withUnsafeBytes(of: &count) { file.append(contentsOf: $0) }
         for offset in offsets {
@@ -179,6 +304,13 @@ public final class Lexicon {
             withUnsafeBytes(of: &value) { file.append(contentsOf: $0) }
         }
         file.append(records)
+        var abbrCount = UInt32(abbrRows.count).littleEndian
+        withUnsafeBytes(of: &abbrCount) { file.append(contentsOf: $0) }
+        for offset in abbrOffsets {
+            var value = offset.littleEndian
+            withUnsafeBytes(of: &value) { file.append(contentsOf: $0) }
+        }
+        file.append(abbrRecords)
         try FileManager.default.createDirectory(
             at: output.deletingLastPathComponent(), withIntermediateDirectories: true
         )

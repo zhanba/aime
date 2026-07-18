@@ -168,6 +168,69 @@ public final class GramModel {
         return best
     }
 
+    // MARK: - 联想
+
+    /// 上屏文本之后的联想候选：以上文尾部 2 字（不足取 1 字）为前缀全区间扫描，
+    /// 先按 value 选 top（不解码），再解码取后继部分（1–4 字）。
+    /// 搭配串无词边界且并非所有词都出现在 key 首位——无命中返回空是常态，调用方静默处理。
+    public func completions(context: String, limit: Int = 6) -> [String] {
+        let tail = Array(context.unicodeScalars.suffix(2))
+        guard !tail.isEmpty else { return [] }
+        let prefix = Array(String(String.UnicodeScalarView(tail)).utf8)
+        let low = lowerBound(prefix, low: 0, high: entryCount)
+        let high = GramModel.upperKey(prefix).map { lowerBound($0, low: low, high: entryCount) } ?? entryCount
+        guard low < high, high - low <= 200_000 else { return [] }
+
+        // 第一遍：只读 value 选 top-24。不同长度 key 的值域系统性不同
+        // （LMDG 按 n-gram 阶重建频次：3字≈13、4字≈16、5字+≈17），按字数减基线归一后再比。
+        // 全 CJK key 的字数 ≈ UTF-8 字节数 / 3，免解码。
+        func baseline(charCount: Int) -> Double {
+            switch charCount {
+            case ..<4: return 13.0
+            case 4: return 16.0
+            case 5: return 16.6
+            default: return 17.0
+            }
+        }
+        var top: [(index: Int, value: Double)] = []
+        for index in low ..< high {
+            // 后继限 1–2 个 CJK 字（3–6 字节）：预测的是下一词，长"后继"多为截断串/实体垃圾
+            let keyBytes = Int(offsets(index + 1)) - Int(offsets(index)) - 4
+            guard (3 ... 6).contains(keyBytes - prefix.count) else { continue }
+            let rawValue = value(of: index)
+            guard abs(rawValue - 22.3327) > 0.01 else { continue }
+            let keyChars = keyBytes / 3
+            let normalized = rawValue - baseline(charCount: keyChars)
+            if top.count < 24 {
+                top.append((index, normalized))
+                continue
+            }
+            if let minAt = top.indices.min(by: { top[$0].value < top[$1].value }),
+               top[minAt].value < normalized {
+                top[minAt] = (index, normalized)
+            }
+        }
+
+        // 第二遍：解码后继并过滤（排序沿用归一分）
+        var bestByWord: [String: Double] = [:]
+        for (index, normalizedValue) in top {
+            let start = recordsBase + Int(offsets(index))
+            let keyLength = Int(offsets(index + 1)) - Int(offsets(index)) - 4
+            guard keyLength > prefix.count else { continue }
+            let remainderBytes = Data(bytes: bytes + start + prefix.count, count: keyLength - prefix.count)
+            guard let remainder = String(data: remainderBytes, encoding: .utf8),
+                  !remainder.contains("$"), !remainder.contains("#")
+            else { continue }
+            // 下一词预测只要 1–2 字单元；3 字+的"后继"多是无词边界的截断串或实体垃圾
+            let charCount = remainder.unicodeScalars.count
+            guard charCount >= 1, charCount <= 2 else { continue }
+            if bestByWord[remainder, default: -.infinity] < normalizedValue {
+                bestByWord[remainder] = normalizedValue
+            }
+        }
+        return bestByWord.sorted { $0.value > $1.value }.prefix(limit).map(\.key)
+    }
+
     // MARK: - 编译
 
     /// 把（搭配串, log(频)×10000）编译为 gram.bin。aime-gram 工具与测试共用。

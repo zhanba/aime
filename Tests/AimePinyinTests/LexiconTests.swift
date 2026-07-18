@@ -48,6 +48,33 @@ final class LexiconTests: XCTestCase {
         XCTAssertEqual(dropped, 1) // "bad syl" 非法音节被过滤
     }
 
+    func testAbbrMatches() throws {
+        let lexicon = try XCTUnwrap(Lexicon(url: lexiconURL))
+        XCTAssertFalse(lexicon.isLegacyFormat)
+        // "nh" → 你好（首字母简拼，按权重降序）
+        XCTAssertEqual(lexicon.abbrMatches(key: "nh").map(\.word), ["你好"])
+        // "sj" → 世界；"jt" → 今天
+        XCTAssertEqual(lexicon.abbrMatches(key: "sj").first?.word, "世界")
+        XCTAssertEqual(lexicon.abbrMatches(key: "jt").first?.word, "今天")
+        // zh/ch/sh 变体："sc" 与 "shch" 都命中 删除(shan chu 40000)/山川(shan chuan 8000)，权重降序
+        XCTAssertEqual(lexicon.abbrMatches(key: "sc").map(\.word), ["删除", "山川"])
+        XCTAssertEqual(lexicon.abbrMatches(key: "shch").map(\.word), ["删除", "山川"])
+        // 单字词不入简拼索引
+        XCTAssertTrue(lexicon.abbrMatches(key: "n").isEmpty)
+        XCTAssertTrue(lexicon.abbrMatches(key: "zzz").isEmpty)
+    }
+
+    func testAbbrEngineCandidates() throws {
+        let engine = PinyinEngine(lexiconURL: lexiconURL)
+        // 纯简拼串：无全拼解析，简拼词直接成为词候选
+        let result = engine.analyze("nh")
+        XCTAssertEqual(result.wordCandidates.first?.word, "你好")
+        XCTAssertEqual(result.wordCandidates.first?.typedLength, 2)
+        // 可全拼解析的串不受影响
+        let full = engine.analyze("nihao")
+        XCTAssertEqual(full.wordCandidates.first?.word, "你好")
+    }
+
     func testExactAndPrefixQuery() throws {
         let lexicon = try XCTUnwrap(Lexicon(url: lexiconURL))
         XCTAssertEqual(lexicon.entryCount, 28)

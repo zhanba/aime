@@ -282,6 +282,21 @@ public final class PinyinEngine {
             }
         }
 
+        // 简拼：整串是 2–8 个小写字母时试缩写索引（"nh"→你好）。
+        // 全拼可解析的串（如 nihao）取的是"n i h a o"这类不存在的 key，天然空结果，无冲突。
+        var abbrCandidates: [WordCandidate] = []
+        if raw.count >= 2, raw.count <= 8, raw.allSatisfy({ $0.isLowercase && $0.isLetter }),
+           let lexicon {
+            abbrCandidates = lexicon.abbrMatches(key: raw, limit: 8).map { entry in
+                WordCandidate(
+                    word: entry.word,
+                    syllableCount: entry.key.split(separator: " ").count,
+                    typedLength: raw.count,
+                    score: log(entry.weight + 1)
+                )
+            }
+        }
+
         // 词候选：第一个拼音段的起点（活动段），主切分 + 边界变体合并
         var candidates: [WordCandidate] = []
         if let firstPinyin = segments.first(where: {
@@ -296,6 +311,15 @@ public final class PinyinEngine {
             // 展示排序：长词加成 + 用原始分；单字海量高频不该淹没整词
             let ranked = matches
                 .sorted { ($0.score + Double($0.syllableCount) * 4) > ($1.score + Double($1.syllableCount) * 4) }
+            // 简拼 vs 全拼的先后：全拼解析全程无需纠错修复 → 用户在打全拼，简拼靠后；
+            // 解析里有修复出来的音节（如 "nh" 靠漏敲修出 nu）→ 简拼意图更可信，排前
+            let parseIsExact = syllables.allSatisfy { $0.source == .exact }
+            if !parseIsExact {
+                for candidate in abbrCandidates {
+                    seen.insert(candidate.word)
+                    candidates.append(candidate)
+                }
+            }
             for candidate in ranked {
                 let dedupeKey = candidate.word
                 guard !seen.contains(dedupeKey) else { continue }
@@ -303,6 +327,14 @@ public final class PinyinEngine {
                 candidates.append(candidate)
                 if candidates.count >= 24 { break }
             }
+            if parseIsExact {
+                for candidate in abbrCandidates where !seen.contains(candidate.word) {
+                    seen.insert(candidate.word)
+                    candidates.append(candidate)
+                }
+            }
+        } else {
+            candidates = abbrCandidates
         }
         return Result(
             segments: segments,
@@ -310,6 +342,25 @@ public final class PinyinEngine {
             wordCandidates: candidates,
             boundaryAlternatives: alternatives
         )
+    }
+
+    /// 联想：语法模型后继候选 + 词库真词校验（搭配串无词边界，裸 remainder 可能拼错词）。
+    /// 无干净命中时返回空（IME 不弹联想栏）。
+    public func predictions(context: String, limit: Int = 5) -> [String] {
+        guard let gram, let lexicon else { return [] }
+        var results: [String] = []
+        for word in gram.completions(context: context, limit: 16) {
+            // 单字直接放行（都是真字）；多字必须能在词库里以整词存在
+            if word.count > 1 {
+                guard let syllables = PinyinVerifier.derivePinyinSyllables(from: word),
+                      lexicon.exactMatches(key: syllables.joined(separator: " "))
+                      .contains(where: { $0.word == word })
+                else { continue }
+            }
+            results.append(word)
+            if results.count >= limit { break }
+        }
+        return results
     }
 
     /// 词消耗的原始按键长度（含被跳过的分隔符），部分上屏用。

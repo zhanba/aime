@@ -52,41 +52,24 @@ struct GramFile {
         unit & 0x7FFF_FFFF
     }
 
-    /// DFS 全量枚举 (编码 key, value)。keys ≤ 9 字 ≈ ≤18 字节，深度有限。
+    /// DFS 全量枚举 (编码 key, value)。keys ≤ 9 字 ≈ ≤18 字节，递归深度有限。
     func traverse(_ visit: (_ encodedKey: [UInt8], _ value: UInt32) -> Void) {
         var key: [UInt8] = []
-        // 迭代式 DFS：栈元素 = (节点下标, 下一个待试 label)
-        var stack: [(node: Int, nextLabel: UInt32)] = [(0, 0)]
-        while !stack.isEmpty {
-            let (node, next) = stack.removeLast()
+        func descend(_ node: Int) {
             let nodeUnit = unit(node)
             let nodeOffset = GramFile.offset(of: nodeUnit)
-            if next == 0 {
-                // 首次进入该节点：叶子检查
-                if GramFile.hasLeaf(nodeUnit) {
-                    let leaf = unit(node ^ nodeOffset)
-                    visit(key, GramFile.value(of: leaf))
-                }
+            if GramFile.hasLeaf(nodeUnit) {
+                visit(key, GramFile.value(of: unit(node ^ nodeOffset)))
             }
-            var label = next
-            var found = false
-            while label < 256 {
-                if label != 0 {
-                    let child = node ^ nodeOffset ^ Int(label)
-                    if child < unitCount, GramFile.label(of: unit(child)) == label {
-                        stack.append((node, label + 1))
-                        stack.append((child, 0))
-                        key.append(UInt8(label))
-                        found = true
-                        break
-                    }
-                }
-                label += 1
-            }
-            if !found, !key.isEmpty, stack.last?.node != node || stack.isEmpty {
+            for label in 1 ..< 256 {
+                let child = node ^ nodeOffset ^ label
+                guard child < unitCount, GramFile.label(of: unit(child)) == UInt32(label) else { continue }
+                key.append(UInt8(label))
+                descend(child)
                 key.removeLast()
             }
         }
+        descend(0)
     }
 }
 
