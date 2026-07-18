@@ -29,8 +29,8 @@ public struct SentenceComposer {
     public var beamWidth = 8
 
     public init(
-        lexicon: Lexicon, gram: GramModel? = nil, gramWeight: Double = 1.0,
-        lambda: Double = 14.0, singleCharDamp: Double = 3.0
+        lexicon: Lexicon, gram: GramModel? = nil, gramWeight: Double = 0.3,
+        lambda: Double = 16.0, singleCharDamp: Double = 3.0
     ) {
         self.lexicon = lexicon
         self.gram = gram
@@ -112,6 +112,9 @@ public struct SentenceComposer {
         let tailLimit = (gram?.penalties.collocationMaxLength ?? 6) - 1
         // gram 缺失时转移分恒 0，多路径无意义：退化为经典单路径 Viterbi
         let effectiveBeam = gram == nil ? 1 : beamWidth
+        // gram 给每个非搭配词加 gramWeight×nonCollocation 的常数偏置，等效削弱每词惩罚；
+        // λ 自动补回，保持"词多词少"的偏好与无 gram 时一致（λ16 + 0.3×6 ≈ 评测最优的 18）
+        let effectiveLambda = lambda + (gram.map { gramWeight * -$0.penalties.nonCollocation } ?? 0)
         var dp = [[Cell]](repeating: [], count: count + 1)
         dp[0] = [Cell(score: 0, previous: 0, previousBeam: 0, word: "", tail: "#")]
 
@@ -144,7 +147,7 @@ public struct SentenceComposer {
                             context: cell.tail, word: edge.word, isRear: target == count
                         )
                     }
-                    let score = cell.score + edge.score - lambda - damp + transition
+                    let score = cell.score + edge.score - effectiveLambda - damp + transition
                     let tail = String((cell.tail + edge.word).suffix(tailLimit))
                     // 按尾部去重：同尾部只留最高分（后续转移分只看尾部，低分同尾必然被支配）
                     if let existing = dp[target].firstIndex(where: { $0.tail == tail }) {
@@ -198,15 +201,16 @@ public final class PinyinEngine {
         reloadLexicon(from: lexiconURL, gramURL: gramURL)
     }
 
-    /// 调参入口（CLI 扫参用）。默认 λ=14/damp=3 来自 20 句测试集扫参（70% 本地命中）
-    public var lambda: Double = 14.0 {
+    /// 调参入口（CLI 扫参用）。默认 λ=16/damp=3 来自 560 句测试集扫参
+    /// （无 gram 39.5%；gram 时 λ 由 composer 按 gramWeight 自动补偿）
+    public var lambda: Double = 16.0 {
         didSet { composer?.lambda = lambda }
     }
     public var singleCharDamp: Double = 3.0 {
         didSet { composer?.singleCharDamp = singleCharDamp }
     }
     /// 语法转移分权重（gram 未安装时无效果）
-    public var gramWeight: Double = 1.0 {
+    public var gramWeight: Double = 0.3 {
         didSet { composer?.gramWeight = gramWeight }
     }
     /// beam 宽度（gram 未安装时恒为 1）

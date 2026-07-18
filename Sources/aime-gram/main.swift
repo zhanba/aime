@@ -200,6 +200,8 @@ case "convert":
     var clampTo: UInt32 = 0
     // 冗余剪枝：len≥4 的 key，若「去掉首字的后缀」条目存在且值差 ≤ delta，长条目不提供新信息 → 删
     var redundancyDelta: UInt32?
+    // 分层阈值：≤3 字条目（泛化层）全保留，≥4 字条目（特化层）要求 value ≥ minLogLong
+    var minLogLong: UInt32 = 0
     var rest = Array(arguments.dropFirst(2))
     while !rest.isEmpty {
         let arg = rest.removeFirst()
@@ -209,6 +211,7 @@ case "convert":
         case "--clamp-above": clampAbove = UInt32(rest.removeFirst()) ?? .max
         case "--clamp-to": clampTo = UInt32(rest.removeFirst()) ?? 0
         case "--prune-delta": redundancyDelta = UInt32(rest.removeFirst())
+        case "--min-log-long": minLogLong = UInt32(rest.removeFirst()) ?? 0
         case "--out": outPath = rest.removeFirst()
         default:
             print("未知参数 \(arg)")
@@ -226,9 +229,12 @@ case "convert":
         total += 1
         let clamped = value > clampAbove ? clampTo : value
         guard clamped >= minLog, let key = GramKey.decode(encoded) else { return }
-        // key 末尾可能是 '$'（句尾标记），字符数按汉字算
-        let hanCount = key.hasSuffix("$") ? key.count - 1 : key.count
+        // key 末尾可能是 '$'（句尾标记）、开头可能是 '#'（句首标记），字符数按汉字算
+        var hanCount = key.count
+        if key.hasSuffix("$") { hanCount -= 1 }
+        if key.hasPrefix("#") { hanCount -= 1 }
         guard hanCount <= maxChars else { return }
+        if hanCount >= 4, clamped < minLogLong { return }
         entries.append((key, clamped))
     }
     print("总条数 \(total) → 保留 \(entries.count)（min-log=\(minLog)），遍历 \(String(format: "%.1f", Date().timeIntervalSince(began)))s")

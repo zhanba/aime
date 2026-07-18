@@ -13,7 +13,6 @@ import Foundation
 public final class GramModel {
     private let data: NSData  // mmap 持有者；bytes 指针在其生命周期内稳定
     private let bytes: UnsafeRawPointer
-    private let offsets: [UInt32]
     private let recordsBase: Int
     public let entryCount: Int
 
@@ -45,27 +44,26 @@ public final class GramModel {
         let entryCount = Int(UInt32(littleEndian: count))
         let offsetsEnd = 12 + (entryCount + 1) * 4
         guard entryCount > 0, data.count > offsetsEnd else { return nil }
-        var offsets = [UInt32](repeating: 0, count: entryCount + 1)
-        data.withUnsafeBytes { raw in
-            for index in 0 ... entryCount {
-                offsets[index] = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: 12 + index * 4, as: UInt32.self))
-            }
-        }
         let nsData = data as NSData
         self.data = nsData
         self.bytes = nsData.bytes
-        self.offsets = offsets
         self.recordsBase = offsetsEnd
         self.entryCount = entryCount
     }
 
     // MARK: - 底层记录访问（原始指针，避免 Data 切片开销）
+    // 偏移表不复制进堆（3000 万条 = 127MB），直接从 mmap 按需读：常驻内存交给页缓存管理。
+
+    @inline(__always)
+    private func offsets(_ index: Int) -> UInt32 {
+        UInt32(littleEndian: UnsafeRawPointer(bytes + 12 + index * 4).loadUnaligned(as: UInt32.self))
+    }
 
     /// target 与第 index 条 key 的三路比较：<0 表示 key < target
     @inline(__always)
     private func compareKey(at index: Int, with target: [UInt8]) -> Int {
-        let start = recordsBase + Int(offsets[index])
-        let keyLength = Int(offsets[index + 1]) - Int(offsets[index]) - 4
+        let start = recordsBase + Int(offsets(index))
+        let keyLength = Int(offsets(index + 1)) - Int(offsets(index)) - 4
         let result = target.withUnsafeBytes { targetBuffer in
             memcmp(bytes + start, targetBuffer.baseAddress!, min(keyLength, target.count))
         }
@@ -75,13 +73,13 @@ public final class GramModel {
 
     @inline(__always)
     private func keyEquals(at index: Int, _ target: [UInt8]) -> Bool {
-        Int(offsets[index + 1]) - Int(offsets[index]) - 4 == target.count
+        Int(offsets(index + 1)) - Int(offsets(index)) - 4 == target.count
             && compareKey(at: index, with: target) == 0
     }
 
     @inline(__always)
     private func value(of index: Int) -> Double {
-        let end = recordsBase + Int(offsets[index + 1])
+        let end = recordsBase + Int(offsets(index + 1))
         let raw = UnsafeRawPointer(bytes + end - 4).loadUnaligned(as: UInt32.self)
         return Double(UInt32(littleEndian: raw)) / 10_000.0
     }

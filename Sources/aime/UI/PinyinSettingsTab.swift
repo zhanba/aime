@@ -5,6 +5,7 @@ import SwiftUI
 struct PinyinSettingsTab: View {
     @State private var enabledRules: Set<String> = Settings.current().fuzzyRuleIDs
     @ObservedObject private var lexicon = LexiconInstaller.shared
+    @ObservedObject private var gram = GramInstaller.shared
     @State private var imeInstalled = IMEInstaller.isInstalled
     @State private var installMessage: String?
     @State private var installFailed = false
@@ -23,6 +24,14 @@ struct PinyinSettingsTab: View {
                 Text("词库")
             } footer: {
                 Text("来自开源词库白霜拼音，缺失时自动下载（约 12MB）。")
+            }
+
+            Section {
+                gramRow
+            } header: {
+                Text("语法模型")
+            } footer: {
+                Text("词语搭配知识，大幅提升整句准确率。数据来自万象拼音 LMDG（CC-BY-4.0）。")
             }
 
             Section("模糊音") {
@@ -94,6 +103,34 @@ struct PinyinSettingsTab: View {
             case .idle:
                 if lexicon.installedInfo != nil {
                     Button("检查更新") { lexicon.install() }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var gramRow: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(gram.installedInfo ?? "未安装，将在下次启动时自动下载")
+                switch gram.phase {
+                case .idle:
+                    EmptyView()
+                case .downloading(let text):
+                    Text(text).font(.caption).foregroundStyle(.secondary)
+                case .failed(let message):
+                    Text(message).font(.caption).foregroundStyle(.red)
+                }
+            }
+            Spacer()
+            switch gram.phase {
+            case .downloading:
+                ProgressView().controlSize(.small)
+            case .failed:
+                Button("重试") { gram.install() }
+            case .idle:
+                if gram.installedInfo != nil {
+                    Button("检查更新") { gram.install() }
                 }
             }
         }

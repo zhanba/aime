@@ -88,6 +88,8 @@ final class AppState: ObservableObject {
         daemon.bootstrap()
         // 词库是本地整句/词候选的前提，缺失时自动补齐（约 12MB），不等用户去设置页点
         LexiconInstaller.shared.installIfNeeded()
+        // 语法模型提升整句准确率，缺失时自动补齐；失败不影响基本输入（引擎自动退化）
+        GramInstaller.shared.installIfNeeded()
         // 输入法副本随主程序更新自动跟进（Sparkle 只更新 aime.app）
         IMEInstaller.autoUpdateIfNeeded()
 
