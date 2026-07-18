@@ -6,6 +6,8 @@
 	<string>zh_CN</string>
 	<key>CFBundleExecutable</key>
 	<string>aime</string>
+	<key>CFBundleIconFile</key>
+	<string>aime-ime.icns</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.zhanba.aime</string>
 	<key>CFBundleInfoDictionaryVersion</key>

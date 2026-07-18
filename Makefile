@@ -54,6 +54,7 @@ bundle: build ime
 	cp $(METALLIB) $(APP)/Contents/Resources/mlx.metallib
 	ln -s ../Resources/mlx.metallib $(APP)/Contents/MacOS/mlx.metallib
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
+	cp Resources/aime-ime.icns Resources/aime-menu-glyph.pdf $(APP)/Contents/Resources/
 	$(call stamp_version,$(APP)/Contents/Info.plist)
 	cp -R $(IME_APP) $(APP)/Contents/Helpers/
 	# Sparkle：非 Xcode 构建需手动嵌入并逐个签名内嵌组件（官方 Sandboxing/非 Xcode 分发文档的顺序）

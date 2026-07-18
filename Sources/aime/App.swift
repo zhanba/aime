@@ -16,7 +16,11 @@ struct AimeApp: App {
         MenuBarExtra {
             MenuContent(state: state, voice: voice)
         } label: {
-            Image(systemName: menuIcon)
+            switch voice.phase {
+            case .recording: Image(systemName: "waveform.circle.fill")
+            case .transcribing, .refining, .preparingModel: Image(systemName: "waveform.circle")
+            default: Image(nsImage: Self.brandMenuIcon)
+            }
         }
 
         SwiftUI.Settings {
@@ -24,13 +28,15 @@ struct AimeApp: App {
         }
     }
 
-    private var menuIcon: String {
-        switch voice.phase {
-        case .recording: return "waveform.circle.fill"
-        case .transcribing, .refining, .preparingModel: return "waveform.circle"
-        default: return "waveform"
+    // 品牌字形（a + 声波调号）作模板图：跟随菜单栏明暗与选中反色
+    private static let brandMenuIcon: NSImage = {
+        guard let img = Bundle.main.image(forResource: "aime-menu-glyph") else {
+            return NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)!
         }
-    }
+        img.isTemplate = true
+        img.size = NSSize(width: 16, height: 16)
+        return img
+    }()
 }
 
 struct MenuContent: View {
