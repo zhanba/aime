@@ -12,6 +12,8 @@ public struct WordCandidate: Equatable, Sendable {
     public var score: Double
     /// 来自简拼索引（nh→你好）而非全拼解析
     public var isAbbreviation = false
+    /// 路径上用过模糊音变体（zhong→zong）：展示排序降权用
+    public var usedFuzzy = false
 }
 
 /// 本地造句：在音节假设序列上跑 beam Viterbi（词频 unigram + 语法搭配转移 + 每词惩罚 λ）。
@@ -42,18 +44,18 @@ public struct SentenceComposer {
     }
 
     /// 每个音节位置的读音假设（正解 + 模糊音 + 漏敲多敲备选，带可信度）
-    static func hypotheses(for syllable: Syllable) -> [(text: String, credibility: Double)] {
-        var list: [(String, Double)] = []
+    static func hypotheses(for syllable: Syllable) -> [(text: String, credibility: Double, isFuzzy: Bool)] {
+        var list: [(String, Double, Bool)] = []
         if syllable.source == .partial {
             // 未打完的音节：用补全候选参与组词（可信度低）
             for completion in syllable.completions.prefix(3) {
-                list.append((completion, 0.5))
+                list.append((completion, 0.5, false))
             }
             return list
         }
-        list.append((syllable.text, syllable.source.credibility))
+        list.append((syllable.text, syllable.source.credibility, false))
         for alternate in syllable.fuzzyAlternates.prefix(3) {
-            list.append((alternate, syllable.source.credibility * 0.9))
+            list.append((alternate, syllable.source.credibility * 0.9, true))
         }
         return list
     }
@@ -61,26 +63,28 @@ public struct SentenceComposer {
     /// 从音节位置 start 出发的全部词匹配（BFS 前缀下潜，假设分支 ×每步剪枝）。
     func wordMatches(syllables: [Syllable], from start: Int, maxLength: Int = 8) -> [WordCandidate] {
         var results: [WordCandidate] = []
-        // (当前 key, 累计可信度 log)
-        var frontier: [(key: String, credibilityLog: Double)] = [("", 0)]
+        // (当前 key, 累计可信度 log, 路径含模糊音)
+        var frontier: [(key: String, credibilityLog: Double, usedFuzzy: Bool)] = [("", 0, false)]
         var length = 0
         var typedLength = 0
         while !frontier.isEmpty, start + length < syllables.count, length < maxLength {
             let syllable = syllables[start + length]
             typedLength += syllable.typed.count
-            var next: [(String, Double)] = []
-            for (key, credibilityLog) in frontier {
-                for (text, credibility) in Self.hypotheses(for: syllable) {
+            var next: [(String, Double, Bool)] = []
+            for (key, credibilityLog, usedFuzzy) in frontier {
+                for (text, credibility, isFuzzy) in Self.hypotheses(for: syllable) {
                     let newKey = key.isEmpty ? text : key + " " + text
                     guard lexicon.hasPrefix(key: newKey) else { continue }
                     let newLog = credibilityLog + log(credibility)
-                    next.append((newKey, newLog))
+                    let newFuzzy = usedFuzzy || isFuzzy
+                    next.append((newKey, newLog, newFuzzy))
                     for entry in lexicon.exactMatches(key: newKey) {
                         results.append(WordCandidate(
                             word: entry.word,
                             syllableCount: length + 1,
                             typedLength: typedLength,
-                            score: log(entry.weight + 1) + newLog
+                            score: log(entry.weight + 1) + newLog,
+                            usedFuzzy: newFuzzy
                         ))
                     }
                 }
@@ -315,9 +319,17 @@ public final class PinyinEngine {
             for variant in PinyinSegmenter.boundaryVariants(of: syllables, enabledFuzzyRuleIDs: fuzzyRuleIDs) {
                 matches += composer.wordMatches(syllables: variant, from: 0)
             }
-            // 展示排序：长词加成 + 用原始分；单字海量高频不该淹没整词
-            let ranked = matches
-                .sorted { ($0.score + Double($0.syllableCount) * 4) > ($1.score + Double($1.syllableCount) * 4) }
+            // 展示排序：长词加成 + 用原始分。两类降权（各 ≈ e^2.5 ≈ 12 倍词频当量）：
+            // - 模糊音路径：用户敲的是 zhong 就该先出 zhong 的词——总计/踪迹 不能压过 中继；
+            //   log(0.9) 的可信度折扣对词频差近乎无感，需要显式拉开
+            // - 单字：多音节输入下高频单字（种/总）不该挤在整词中间；
+            //   单音节输入全员同罚，顺序不变
+            func displayRank(_ candidate: WordCandidate) -> Double {
+                candidate.score + Double(candidate.syllableCount) * 4
+                    - (candidate.usedFuzzy ? 2.5 : 0)
+                    - (candidate.syllableCount == 1 ? 2.5 : 0)
+            }
+            let ranked = matches.sorted { displayRank($0) > displayRank($1) }
             // 简拼 vs 全拼的先后：全拼解析全程无需纠错修复 → 用户在打全拼，简拼靠后；
             // 解析里有修复出来的音节（如 "nh" 靠漏敲修出 nu）→ 简拼意图更可信，排前
             let parseIsExact = syllables.allSatisfy { $0.source == .exact }

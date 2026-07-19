@@ -40,11 +40,14 @@ final class LexiconTests: XCTestCase {
         按钮	an niu	30000
         山川	shan chuan	8000
         牛	niu	30000
+        中继	zhong ji	342
+        总计	zong ji	1700
+        种	zhong	21000
         坏音节	bad syl	1
         """.write(to: dict, atomically: true, encoding: .utf8)
         lexiconURL = dir.appendingPathComponent("lexicon.bin")
         let (kept, dropped) = try Lexicon.compile(rimeDicts: [dict], to: lexiconURL)
-        XCTAssertEqual(kept, 28)
+        XCTAssertEqual(kept, 31)
         XCTAssertEqual(dropped, 1) // "bad syl" 非法音节被过滤
     }
 
@@ -77,7 +80,7 @@ final class LexiconTests: XCTestCase {
 
     func testExactAndPrefixQuery() throws {
         let lexicon = try XCTUnwrap(Lexicon(url: lexiconURL))
-        XCTAssertEqual(lexicon.entryCount, 28)
+        XCTAssertEqual(lexicon.entryCount, 31)
         XCTAssertEqual(lexicon.exactMatches(key: "shi jie").map(\.word), ["世界"])
         XCTAssertTrue(lexicon.hasPrefix(key: "jin"))       // 金 / 今天
         XCTAssertTrue(lexicon.hasPrefix(key: "jin tian"))
@@ -139,6 +142,20 @@ final class LexiconTests: XCTestCase {
         XCTAssertTrue(words.contains("反感"), "\(words)")
         XCTAssertEqual(result.localSentence, "方案")
         XCTAssertTrue(result.boundaryAlternatives.contains("fang an"))
+    }
+
+    func testDisplayRankExactBeatsFuzzyAndSingles() throws {
+        // 实机反馈：zhongji 打不出 中继——被模糊音词（总计 zong ji，权重 5 倍）
+        // 和高频单字（种，权重 60 倍）压到第二页外。展示排序精确整词优先
+        let engine = PinyinEngine(lexiconURL: lexiconURL)
+        let result = engine.analyze("zhongji")
+        let words = result.wordCandidates.map(\.word)
+        XCTAssertEqual(words.first, "中继", "\(words)")
+        let zhongji = try XCTUnwrap(words.firstIndex(of: "中继"))
+        let zongji = try XCTUnwrap(words.firstIndex(of: "总计"), "模糊音词仍应可达 \(words)")
+        XCTAssertLessThan(zhongji, zongji)
+        let single = try XCTUnwrap(words.firstIndex(of: "种"))
+        XCTAssertLessThan(zhongji, single)
     }
 
     func testEngineWithoutLexiconDegrades() {
