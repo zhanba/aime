@@ -106,6 +106,23 @@ public final class DaemonClient: NSObject, AimeDaemonClientXPC {
             .cancelSession()
     }
 
+    /// 本地拼音 LLM 转换。nil = 不可用/被更新请求挤掉/出错——调用方降级即可。
+    /// 首次调用触发 daemon 侧模型加载（秒级），之后单句 ~150ms。
+    public func convertPinyin(raw: String, fuzzyRuleIDs: [String]) async -> String? {
+        let request = PinyinConvertRequest(raw: raw, fuzzyRuleIDs: fuzzyRuleIDs)
+        guard let data = try? JSONEncoder().encode(request) else { return nil }
+        struct Reply { let sentence: String?; let error: String? }
+        let reply: Reply? = await withProxy(timeout: 30) { daemon, done in
+            daemon.convertPinyin(requestJSON: data) { sentence, error in
+                done(Reply(sentence: sentence, error: error))
+            }
+        }
+        if let error = reply?.error {
+            NSLog("aime convertPinyin 失败: \(error)")
+        }
+        return reply?.sentence
+    }
+
     // MARK: AimeDaemonClientXPC（daemon → 客户端回调）
 
     public func transcriptUpdate(_ text: String) {

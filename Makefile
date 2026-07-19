@@ -55,6 +55,8 @@ bundle: build ime
 	ln -s ../Resources/mlx.metallib $(APP)/Contents/MacOS/mlx.metallib
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
 	cp Resources/aime-ime.icns Resources/aime-menu-glyph.pdf $(APP)/Contents/Resources/
+	# 本地拼音 LLM 词元表（daemon 回退查 bundle Resources；换模型需重导，见 aime-llm）
+	cp testdata/cjk_tokens.json $(APP)/Contents/Resources/
 	$(call stamp_version,$(APP)/Contents/Info.plist)
 	cp -R $(IME_APP) $(APP)/Contents/Helpers/
 	# Sparkle：非 Xcode 构建需手动嵌入并逐个签名内嵌组件（官方 Sandboxing/非 Xcode 分发文档的顺序）

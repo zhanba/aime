@@ -1035,6 +1035,24 @@ class AimeInputController: IMKInputController {
     @MainActor
     private func convertNow(_ snapshot: String) async {
         guard snapshot == rawBuffer, !snapshot.isEmpty, !voiceRecording else { return }
+        // 本地拼音 LLM（daemon 常驻，约束解码）：纯本地推理，不受 pureLocalMode/
+        // 屏蔽应用限制；成功即替代云端，失败静默降级到下面的云端路径
+        if SharedConfig.localLLMEnabled, Self.daemonAvailable {
+            let fuzzyIDs = Array(SharedConfig.loadLLMConfig(includeAPIKey: false).enabledFuzzyRuleIDs)
+            if let sentence = await Self.daemonClient.convertPinyin(raw: snapshot, fuzzyRuleIDs: fuzzyIDs),
+               !sentence.isEmpty {
+                guard snapshot == rawBuffer, !voiceRecording else { return }
+                llmConversion = PinyinConversion(best: sentence)
+                convertedFor = snapshot
+                llmVerdict = .pass  // 约束解码逐字来自拼音格子，结构上免回验
+                guard translationPhase == .none else { return }
+                guard page == 0, highlighted == 0 else { return }
+                rebuildCandidates()
+                updateMarkedText()
+                return
+            }
+            guard snapshot == rawBuffer else { return }
+        }
         // 隐私：纯本地模式 / 屏蔽应用内不发 LLM，本地整句照常工作
         guard !SharedConfig.pureLocalMode, !clientBlocked else { return }
         let config = SharedConfig.loadLLMConfig()

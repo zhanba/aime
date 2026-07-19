@@ -14,6 +14,20 @@ public let aimeDaemonMachServiceName = "com.zhanba.aime.daemon"
     /// 结束会话并定稿。reply(ASRResult JSON, 错误描述)。
     func finishSession(reply: @escaping (Data?, String?) -> Void)
     func cancelSession()
+    /// 本地拼音 LLM（形态 A 约束解码）。request 为 PinyinConvertRequest JSON。
+    /// reply(整句, 错误描述)——两者都为 nil 表示被更新的请求挤掉（latest-wins）。
+    func convertPinyin(requestJSON: Data, reply: @escaping (String?, String?) -> Void)
+}
+
+/// 本地拼音 LLM 请求（IME → daemon）。
+public struct PinyinConvertRequest: Codable, Sendable {
+    public var raw: String
+    public var fuzzyRuleIDs: [String]
+
+    public init(raw: String, fuzzyRuleIDs: [String]) {
+        self.raw = raw
+        self.fuzzyRuleIDs = fuzzyRuleIDs
+    }
 }
 
 /// daemon → app（NSXPCConnection 的 exportedObject 反向回调）。

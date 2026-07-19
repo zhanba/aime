@@ -88,6 +88,13 @@ public enum SharedConfig {
         defaults.object(forKey: "predictionEnabled") as? Bool ?? false
     }
 
+    /// 本地拼音 LLM（形态 A 约束解码，daemon 常驻 Qwen3-0.6B）。实验期默认关、无 UI。
+    /// 开时替代云端整句转换（560 句 78.6% / ~150ms vs 云端 ~970ms），失败自动降级云端。
+    /// 开发自用：defaults write <suite> localLLMEnabled -bool true
+    public static var localLLMEnabled: Bool {
+        defaults.object(forKey: "localLLMEnabled") as? Bool ?? false
+    }
+
     public static func mirrorChinesePunctuation(_ enabled: Bool) {
         if chinesePunctuation != enabled {
             defaults.set(enabled, forKey: "chinesePunctuation")

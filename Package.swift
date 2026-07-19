@@ -109,7 +109,7 @@ let package = Package(
         // __info_plist 段内嵌麦克风用途说明（无 bundle 的 launchd 可执行体需要）。
         .executableTarget(
             name: "aime-daemon",
-            dependencies: ["AimeASR"],
+            dependencies: ["AimeASR", "AimeLocalLLM", "AimePinyin"],
             path: "Sources/aime-daemon",
             swiftSettings: [
                 .swiftLanguageMode(.v5)
@@ -123,14 +123,23 @@ let package = Package(
                 ])
             ]
         ),
-        // 本地拼音 LLM spike：Qwen3-0.6B 拼音约束 beam 解码（复用 Qwen3ASR 的
-        // QuantizedTextModel——ASR 0.6B 的文本骨干就是 Qwen3-0.6B）。评测/实验用。
-        .executableTarget(
-            name: "aime-llm",
+        // 本地拼音 LLM（形态 A）：Qwen3-0.6B 拼音约束 beam 解码。vendored 解码器
+        // （修上游 MLXNN.RoPE batch bug）+ 可复用封装，daemon 与评测 CLI 共用。
+        .target(
+            name: "AimeLocalLLM",
             dependencies: [
                 "AimePinyin",
                 .product(name: "Qwen3ASR", package: "qwen3-asr-swift")
             ],
+            path: "Sources/AimeLocalLLM",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
+        // 本地拼音 LLM 评测 CLI：swift run aime-llm --suite testdata/pinyin_testset_large.tsv
+        .executableTarget(
+            name: "aime-llm",
+            dependencies: ["AimePinyin", "AimeLocalLLM"],
             path: "Sources/aime-llm",
             swiftSettings: [
                 .swiftLanguageMode(.v5)

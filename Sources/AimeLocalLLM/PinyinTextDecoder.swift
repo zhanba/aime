@@ -138,14 +138,14 @@ final class PinyinTextLayer: Module {
     }
 }
 
-final class PinyinTextModel: Module {
+public final class PinyinTextModel: Module {
     let config: TextDecoderConfig
 
-    @ModuleInfo var embedTokens: PreQuantizedEmbedding
+    @ModuleInfo public var embedTokens: PreQuantizedEmbedding
     @ModuleInfo var layers: [PinyinTextLayer]
     @ModuleInfo var norm: RMSNorm
 
-    init(config: TextDecoderConfig) {
+    public init(config: TextDecoderConfig) {
         self.config = config
         self._embedTokens.wrappedValue = PreQuantizedEmbedding(
             embeddingCount: config.vocabSize,
@@ -159,7 +159,7 @@ final class PinyinTextModel: Module {
         super.init()
     }
 
-    func callAsFunction(
+    public func callAsFunction(
         inputIds: MLXArray,
         cache: [(MLXArray, MLXArray)]? = nil
     ) -> (MLXArray, [(MLXArray, MLXArray)]) {

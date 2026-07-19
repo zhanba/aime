@@ -1,4 +1,7 @@
 import AimeASR
+import AimeLocalLLM
+import AimePinyin
+import AimeXPC
 import Foundation
 
 /// aime-daemon：模型常驻 + 麦克风采集的推理服务。
@@ -82,6 +85,80 @@ final class DaemonService: NSObject, AimeDaemonXPC {
             let session = self.session
             self.session = nil
             await session?.cancel()
+        }
+    }
+
+    func convertPinyin(requestJSON: Data, reply: @escaping (String?, String?) -> Void) {
+        guard let request = try? JSONDecoder().decode(PinyinConvertRequest.self, from: requestJSON) else {
+            reply(nil, "请求解析失败")
+            return
+        }
+        PinyinLLMService.shared.convert(request, reply: reply)
+    }
+}
+
+/// 本地拼音 LLM（形态 A 约束解码）：模型进程级常驻（跨连接共享），
+/// 串行队列消费 + latest-wins——打字场景旧 code 串的结果没人要，排队时被
+/// 更新请求挤掉的直接回 (nil, nil)，客户端静默降级。
+final class PinyinLLMService {
+    static let shared = PinyinLLMService()
+
+    private let queue = DispatchQueue(label: "com.zhanba.aime.pinyin-llm", qos: .userInitiated)
+    private var decoder: PinyinLocalDecoder?
+    private var loadAttempted = false
+    private var loadError: String?
+    private let lock = NSLock()
+    private var latestGeneration = 0
+
+    func convert(_ request: PinyinConvertRequest, reply: @escaping (String?, String?) -> Void) {
+        lock.lock()
+        latestGeneration += 1
+        let myGeneration = latestGeneration
+        lock.unlock()
+        queue.async {
+            self.lock.lock()
+            let stale = myGeneration != self.latestGeneration
+            self.lock.unlock()
+            if stale {
+                reply(nil, nil)
+                return
+            }
+            if !self.loadAttempted {
+                self.loadAttempted = true
+                self.loadDecoder()
+            }
+            guard let decoder = self.decoder else {
+                reply(nil, self.loadError ?? "本地拼音模型未加载")
+                return
+            }
+            let result = decoder.convert(raw: request.raw, fuzzyRuleIDs: Set(request.fuzzyRuleIDs))
+            reply(result?.sentence, nil)
+        }
+    }
+
+    private func loadDecoder() {
+        guard let modelDir = PinyinLocalDecoder.defaultModelDir() else {
+            loadError = "本地拼音模型目录缺失（App Support/aime/models 或 HF 缓存）"
+            return
+        }
+        guard let tokenTable = PinyinLocalDecoder.defaultTokenTableURL() else {
+            loadError = "词元表缺失（App Support/aime/cjk_tokens.json）"
+            return
+        }
+        guard let lexicon = Lexicon(url: Lexicon.defaultURL) else {
+            loadError = "词库未安装"
+            return
+        }
+        do {
+            let began = Date()
+            let decoder = try PinyinLocalDecoder(
+                modelDir: modelDir, tokenTableURL: tokenTable, lexicon: lexicon)
+            decoder.warmup()
+            self.decoder = decoder
+            NSLog("aime-daemon: 本地拼音 LLM 就绪 %.1fs（%@）", Date().timeIntervalSince(began), modelDir.path)
+        } catch {
+            loadError = error.localizedDescription
+            NSLog("aime-daemon: 本地拼音 LLM 加载失败: %@", loadError!)
         }
     }
 }
