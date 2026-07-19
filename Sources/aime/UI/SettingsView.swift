@@ -191,7 +191,8 @@ private struct AboutTab: View {
 private struct AIServiceTab: View {
     @AppStorage(SettingsKey.apiBaseURL) private var apiBaseURL = "https://api.deepseek.com/v1"
     @AppStorage(SettingsKey.apiModel) private var apiModel = "deepseek-v4-flash"
-    @AppStorage(SettingsKey.apiKey) private var apiKey = ""
+    /// Keychain 存取（不走 UserDefaults，避免明文落盘），进程内引擎每次调用时现读
+    @State private var apiKey = KeychainStore.storedAPIKey() ?? ""
     @AppStorage(SettingsKey.refineStyle) private var refineStyle = RefineStyle.clean.rawValue
     @AppStorage(SettingsKey.customPromptRefine) private var customPromptRefine = ""
     @AppStorage(SettingsKey.customPromptRefineDraft) private var customPromptRefineDraft = ""
@@ -277,8 +278,11 @@ private struct AIServiceTab: View {
                 }
                 TextField("模型", text: $apiModel, prompt: Text("deepseek-v4-flash"))
                 SecureField("API Key", text: $apiKey)
+                    .onChange(of: apiKey) { _, newValue in
+                        KeychainStore.saveAPIKey(newValue)
+                    }
             } footer: {
-                Text("留空即纯本地运行；只发送文本，永不发送音频。")
+                Text("留空即纯本地运行；只发送文本，永不发送音频。Key 存放在系统钥匙串。")
             }
             Section {
                 Picker("功能", selection: $promptTarget) {

@@ -5,6 +5,8 @@ import Foundation
 //   调试单条：  swift run aime-pinyin nihsoshijie [--context "..."]
 //   准确率：    swift run aime-pinyin --suite testdata/pinyin_testset.tsv
 // LLM 配置读共享 suite（app 设置里配好后自动镜像）；无 key 时只输出切分分析。
+// API Key 在钥匙串：本 CLI 无稳定签名，每次重编译读取都会弹授权，
+// 建议用 AIME_API_KEY=sk-xxx 环境变量覆盖。
 
 var inputs: [String] = []
 var suitePath: String?

@@ -65,6 +65,7 @@ final class AppState: ObservableObject {
     func bootstrap() {
         Settings.registerDefaults()
         Settings.normalizeCustomPrompts()
+        Settings.migrateAPIKeyToKeychain()
         accessibilityGranted = ContextCapture.ensureAccessibilityPermission(prompt: true)
 
         hotkey.onPressDown = { [weak self] in Task { @MainActor in self?.hotkeyPressed() } }
@@ -112,7 +113,6 @@ final class AppState: ObservableObject {
         SharedConfig.mirrorFromApp(
             apiBaseURL: settings.apiBaseURL,
             apiModel: settings.apiModel,
-            apiKey: settings.apiKey,
             fuzzyRuleIDs: settings.fuzzyRuleIDs
         )
         SharedConfig.mirrorASRFromApp(

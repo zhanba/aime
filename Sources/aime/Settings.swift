@@ -9,7 +9,7 @@ enum SettingsKey {
     static let qwen3ModelID = "qwen3ModelID"
     static let apiBaseURL = "apiBaseURL"
     static let apiModel = "apiModel"
-    static let apiKey = "apiKey" // TODO: M2 迁移到 Keychain
+    static let apiKey = "apiKey" // 旧明文存储位，已迁 Keychain（KeychainStore），仅迁移清理用
     static let hotkey = "hotkey"
     static let refineStyle = "refineStyle"
     static let bluetoothMicStrategy = "bluetoothMicStrategy"
@@ -83,7 +83,6 @@ struct Settings {
             SettingsKey.qwen3ModelID: Qwen3ModelChoice.small4bit.rawValue,
             SettingsKey.apiBaseURL: "https://api.deepseek.com/v1",
             SettingsKey.apiModel: "deepseek-v4-flash",
-            SettingsKey.apiKey: "",
             SettingsKey.hotkey: HotkeyChoice.rightOption.rawValue,
             SettingsKey.refineStyle: RefineStyle.clean.rawValue,
             SettingsKey.bluetoothMicStrategy: BluetoothMicStrategy.quickRelease.rawValue,
@@ -93,6 +92,17 @@ struct Settings {
             SettingsKey.customPromptPinyin: "",
             SettingsKey.customPromptTranslate: "",
         ])
+    }
+
+    /// 旧版把 API Key 明文存 UserDefaults，迁入 Keychain 后清除本地明文
+    /// （共享 suite 里的副本由 mirrorFromApp 清理）
+    static func migrateAPIKeyToKeychain() {
+        let d = UserDefaults.standard
+        guard let legacy = d.string(forKey: SettingsKey.apiKey), !legacy.isEmpty else { return }
+        if (KeychainStore.storedAPIKey() ?? "").isEmpty {
+            KeychainStore.saveAPIKey(legacy)
+        }
+        d.removeObject(forKey: SettingsKey.apiKey)
     }
 
     /// 存储的自定义 prompt 与内置一致就当没自定义（语音精修恢复跟随输出风格）。
@@ -122,7 +132,7 @@ struct Settings {
             qwen3ModelID: d.string(forKey: SettingsKey.qwen3ModelID) ?? Qwen3ModelChoice.small4bit.rawValue,
             apiBaseURL: d.string(forKey: SettingsKey.apiBaseURL) ?? "https://api.deepseek.com/v1",
             apiModel: d.string(forKey: SettingsKey.apiModel) ?? "deepseek-v4-flash",
-            apiKey: d.string(forKey: SettingsKey.apiKey) ?? "",
+            apiKey: KeychainStore.loadAPIKey() ?? "",
             hotkey: HotkeyChoice(rawValue: d.string(forKey: SettingsKey.hotkey) ?? "") ?? .rightOption,
             refineStyle: RefineStyle(rawValue: d.string(forKey: SettingsKey.refineStyle) ?? "") ?? .clean,
             bluetoothMicStrategy: BluetoothMicStrategy(

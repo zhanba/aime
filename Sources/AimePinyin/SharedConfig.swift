@@ -10,11 +10,12 @@ public enum SharedConfig {
     }
 
     /// 只在值变化时写入：set 会触发 didChangeNotification，无脑写会造成通知风暴
-    public static func mirrorFromApp(apiBaseURL: String, apiModel: String, apiKey: String, fuzzyRuleIDs: Set<String>) {
+    public static func mirrorFromApp(apiBaseURL: String, apiModel: String, fuzzyRuleIDs: Set<String>) {
         let d = defaults
         if d.string(forKey: "apiBaseURL") != apiBaseURL { d.set(apiBaseURL, forKey: "apiBaseURL") }
         if d.string(forKey: "apiModel") != apiModel { d.set(apiModel, forKey: "apiModel") }
-        if d.string(forKey: "apiKey") != apiKey { d.set(apiKey, forKey: "apiKey") }
+        // API Key 已迁 Keychain，清掉共享 plist 里的历史明文
+        if d.object(forKey: "apiKey") != nil { d.removeObject(forKey: "apiKey") }
         let stored = Set((d.array(forKey: "fuzzyRuleIDs") as? [String]) ?? [])
         if stored != fuzzyRuleIDs { d.set(Array(fuzzyRuleIDs), forKey: "fuzzyRuleIDs") }
     }
@@ -142,7 +143,7 @@ public enum SharedConfig {
         return PinyinLLMConfig(
             apiBaseURL: d.string(forKey: "apiBaseURL") ?? "https://api.deepseek.com/v1",
             apiModel: d.string(forKey: "apiModel") ?? "deepseek-v4-flash",
-            apiKey: d.string(forKey: "apiKey") ?? "",
+            apiKey: KeychainStore.loadAPIKey() ?? "",
             enabledFuzzyRuleIDs: fuzzy ?? FuzzyRule.defaultEnabled,
             customPromptRefine: d.string(forKey: "customPromptRefine") ?? "",
             customPromptPinyin: d.string(forKey: "customPromptPinyin") ?? "",
