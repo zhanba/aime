@@ -79,6 +79,15 @@ final class SegmenterTests: XCTestCase {
         XCTAssertEqual(repaired.first?.text, "hao")
     }
 
+    func testExactSequenceNotRepaired() {
+        // yianzhuang（已安装）：yian 全 exact 可切成 yi|an，
+        // 不应被临近键修复成 tian（y→t）——正确拼音不当手误
+        let segments = PinyinSegmenter.segment("yianzhuang")
+        XCTAssertEqual(syllableTexts(segments), ["yi", "an", "zhuang"])
+        guard case .pinyin(let syllables) = segments[0].kind else { return XCTFail() }
+        XCTAssertTrue(syllables.allSatisfy { $0.source == .exact }, "\(syllables)")
+    }
+
     func testTranspositionRepair() {
         // womne：men 敲成 mne（相邻换位）
         let segments = PinyinSegmenter.segment("womne")

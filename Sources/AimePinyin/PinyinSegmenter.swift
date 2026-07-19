@@ -106,6 +106,19 @@ public enum PinyinSegmenter {
         case separator
     }
 
+    /// 该字符串能否完整切成合法音节序列（单音节 isValid 的多音节推广）
+    static func isExactSyllableSequence(_ chars: [Character]) -> Bool {
+        var reachable = [Bool](repeating: false, count: chars.count + 1)
+        reachable[0] = true
+        for start in 0 ..< chars.count where reachable[start] {
+            let maxLength = min(PinyinTable.maxSyllableLength, chars.count - start)
+            for length in 1 ... maxLength where PinyinTable.isValid(String(chars[start ..< start + length])) {
+                reachable[start + length] = true
+            }
+        }
+        return reachable[chars.count]
+    }
+
     public static func segment(_ input: String, enabledFuzzyRuleIDs: Set<String> = FuzzyRule.defaultEnabled) -> [PinyinSegment] {
         let chars = Array(input)
         let count = chars.count
@@ -152,30 +165,35 @@ public enum PinyinSegmenter {
                           kind: .syllable(text: typed, typed: typed, source: .exact, completions: []))
                     continue
                 }
-                // 临近键替换（含相邻换位，区分代价）
-                if length >= 2, length <= PinyinTable.maxSyllableLength {
-                    for candidate in QwertyAdjacency.substitutionRepairs(of: typedChars) where PinyinTable.isValid(candidate) {
-                        relax(position + length, cost: TransformSource.keyAdjacent.stepCost, from: position,
-                              kind: .syllable(text: candidate, typed: typed, source: .keyAdjacent, completions: []))
+                // 修复类解释只对无法 exact 切分的跨度生效：正确拼音不当手误
+                // （yianzhuang 的 yian = yi|an，不修成 tian；与 deletionMap 的单音节
+                // exact 优先同一原则，推广到音节序列。partial 不受此限）
+                if !isExactSyllableSequence(typedChars) {
+                    // 临近键替换（含相邻换位，区分代价）
+                    if length >= 2, length <= PinyinTable.maxSyllableLength {
+                        for candidate in QwertyAdjacency.substitutionRepairs(of: typedChars) where PinyinTable.isValid(candidate) {
+                            relax(position + length, cost: TransformSource.keyAdjacent.stepCost, from: position,
+                                  kind: .syllable(text: candidate, typed: typed, source: .keyAdjacent, completions: []))
+                        }
+                        for candidate in QwertyAdjacency.transpositionRepairs(of: typedChars) where PinyinTable.isValid(candidate) {
+                            relax(position + length, cost: TransformSource.transposition.stepCost, from: position,
+                                  kind: .syllable(text: candidate, typed: typed, source: .transposition, completions: []))
+                        }
                     }
-                    for candidate in QwertyAdjacency.transpositionRepairs(of: typedChars) where PinyinTable.isValid(candidate) {
-                        relax(position + length, cost: TransformSource.transposition.stepCost, from: position,
-                              kind: .syllable(text: candidate, typed: typed, source: .transposition, completions: []))
+                    // 漏敲：typed 是某音节挖掉一个字母的变体
+                    if length >= 1, length <= PinyinTable.maxSyllableLength - 1,
+                       let fullSyllables = SpellingTransforms.deletionMap[typed] {
+                        for candidate in fullSyllables.prefix(3) {
+                            relax(position + length, cost: TransformSource.deletion.stepCost, from: position,
+                                  kind: .syllable(text: candidate, typed: typed, source: .deletion, completions: []))
+                        }
                     }
-                }
-                // 漏敲：typed 是某音节挖掉一个字母的变体
-                if length >= 1, length <= PinyinTable.maxSyllableLength - 1,
-                   let fullSyllables = SpellingTransforms.deletionMap[typed] {
-                    for candidate in fullSyllables.prefix(3) {
-                        relax(position + length, cost: TransformSource.deletion.stepCost, from: position,
-                              kind: .syllable(text: candidate, typed: typed, source: .deletion, completions: []))
-                    }
-                }
-                // 多敲：typed 删掉一个字母后合法
-                if length >= 3 {
-                    for candidate in SpellingTransforms.insertionRepairs(of: typedChars) {
-                        relax(position + length, cost: TransformSource.insertion.stepCost, from: position,
-                              kind: .syllable(text: candidate, typed: typed, source: .insertion, completions: []))
+                    // 多敲：typed 删掉一个字母后合法
+                    if length >= 3 {
+                        for candidate in SpellingTransforms.insertionRepairs(of: typedChars) {
+                            relax(position + length, cost: TransformSource.insertion.stepCost, from: position,
+                                  kind: .syllable(text: candidate, typed: typed, source: .insertion, completions: []))
+                        }
                     }
                 }
                 // 句尾 partial：到 buffer 末尾且是某音节的真前缀
