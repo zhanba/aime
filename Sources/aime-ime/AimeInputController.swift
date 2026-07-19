@@ -143,6 +143,7 @@ class AimeInputController: IMKInputController {
 
     override func activateServer(_ sender: Any!) {
         PinyinEngine.shared.reloadIfChanged()
+        PinyinEngine.shared.personalized = true
         UserDictionary.shared.reload()
         resetAll()
         Task { @MainActor in
@@ -829,6 +830,13 @@ class AimeInputController: IMKInputController {
             if !abbrLeads, let local = engineResult?.localSentence,
                !list.contains(where: { $0.text == local }) {
                 list.append(Candidate(text: local, kind: .localSentence, typedLength: nil))
+            }
+            // 句级备选：beam 次优路径（首选整句不对时按 2/3 换句，不必退到逐词）
+            if !abbrLeads {
+                for alternative in engineResult?.localAlternatives ?? []
+                where !list.contains(where: { $0.text == alternative }) {
+                    list.append(Candidate(text: alternative, kind: .localSentence, typedLength: nil))
+                }
             }
             var emojiBudget = 2
             for word in engineResult?.wordCandidates.prefix(16) ?? [] {

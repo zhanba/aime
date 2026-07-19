@@ -31,6 +31,9 @@ public struct SentenceComposer {
     public var singleCharDamp: Double
     /// beam 宽度：每个音节位置保留的（按句面尾部去重后的）最优路径数
     public var beamWidth = 8
+    /// 个性化：用户词库衰减评分（词 → 原始分），加成 2·log(1+分) 乘进词边。
+    /// nil = 关（评测/单测确定性）；IME 进程注入 UserDictionary 评分。
+    public var userScore: ((String) -> Double)?
 
     public init(
         lexicon: Lexicon, gram: GramModel? = nil, gramWeight: Double = 0.3,
@@ -79,11 +82,13 @@ public struct SentenceComposer {
                     let newFuzzy = usedFuzzy || isFuzzy
                     next.append((newKey, newLog, newFuzzy))
                     for entry in lexicon.exactMatches(key: newKey) {
+                        // 用户词库加成：整句 Viterbi 词边与词候选共用（学习闭环进本地层）
+                        let boost = userScore.map { 2 * log(1 + $0(entry.word)) } ?? 0
                         results.append(WordCandidate(
                             word: entry.word,
                             syllableCount: length + 1,
                             typedLength: typedLength,
-                            score: log(entry.weight + 1) + newLog,
+                            score: log(entry.weight + 1) + newLog + boost,
                             usedFuzzy: newFuzzy
                         ))
                     }
@@ -230,6 +235,17 @@ public final class PinyinEngine {
     public var beamWidth: Int = 8 {
         didSet { composer?.beamWidth = beamWidth }
     }
+    /// 个性化评分注入（词 → 用户词库衰减评分）。默认 nil：评测与单测确定，
+    /// 结果不随机器上的 userdict 漂移；IME 进程用 personalized 开关接 UserDictionary。
+    public var userScoreProvider: ((String) -> Double)? {
+        didSet { composer?.userScore = userScoreProvider }
+    }
+    /// userScoreProvider 的 UserDictionary 便捷形式（IME/App 用）
+    public var personalized: Bool = false {
+        didSet {
+            userScoreProvider = personalized ? { UserDictionary.shared.score(of: $0) } : nil
+        }
+    }
 
     private var lexiconURL = Lexicon.defaultURL
     private var gramURL = GramModel.defaultURL
@@ -249,6 +265,7 @@ public final class PinyinEngine {
                 lambda: lambda, singleCharDamp: singleCharDamp
             )
         }
+        composer?.userScore = userScoreProvider
     }
 
     /// 词库/语法模型文件被（另一进程）更新或删除后热重载。IME 在 activateServer 时调用，stat 开销可忽略。
@@ -268,6 +285,9 @@ public final class PinyinEngine {
         public var wordCandidates: [WordCandidate]
         /// 边界歧义的替代切分（如 fangan 的 "fang an"），供 LLM prompt 提示
         public var boundaryAlternatives: [String] = []
+        /// 句级备选：beam 次优路径整句（首选不对时一键换句）。
+        /// 仅单拼音段时提供（多段组合爆炸）；gram 未装时来自边界变体。
+        public var localAlternatives: [String] = []
     }
 
     public func analyze(_ raw: String, fuzzyRuleIDs: Set<String> = FuzzyRule.defaultEnabled) -> Result {
@@ -276,22 +296,38 @@ public final class PinyinEngine {
             return Result(segments: segments, localSentence: nil, wordCandidates: [])
         }
 
-        // 本地整句：拼音段（含边界歧义变体）多路 Viterbi 择优，literal 段透传
-        var sentence = ""
+        // 本地整句：拼音段（含边界歧义变体）多路 Viterbi 择优，literal 段透传。
+        // 拼音段取 n-best（主切分+变体合并去重）：首名进整句，次优做句级备选。
+        var parts: [String] = []
         var alternatives: [String] = []
+        var pinyinSegmentCount = 0
+        var pinyinPartIndex = 0
+        var pinyinPartOptions: [String] = []
         for segment in segments {
             switch segment.kind {
             case .literal(let text):
-                sentence += text
+                parts.append(text)
             case .pinyin(let syllables):
+                pinyinSegmentCount += 1
                 let variants = PinyinSegmenter.boundaryVariants(of: syllables, enabledFuzzyRuleIDs: fuzzyRuleIDs)
                 alternatives += variants.map { $0.map(\.text).joined(separator: " ") }
-                var best = composer.composeScored(syllables: syllables)
+                var merged = composer.composeNBest(syllables: syllables, limit: 3)
                 for variant in variants {
-                    let scored = composer.composeScored(syllables: variant)
-                    if scored.score > best.score { best = scored }
+                    merged += composer.composeNBest(syllables: variant, limit: 3)
                 }
-                sentence += best.sentence
+                merged.sort { $0.score > $1.score }
+                var seen = Set<String>()
+                let ranked = merged.filter { seen.insert($0.sentence).inserted }
+                parts.append(ranked.first?.sentence ?? "")
+                pinyinPartIndex = parts.count - 1
+                pinyinPartOptions = ranked.dropFirst().prefix(2).map(\.sentence)
+            }
+        }
+        let sentence = parts.joined()
+        var localAlternatives: [String] = []
+        if pinyinSegmentCount == 1 {
+            localAlternatives = pinyinPartOptions.map { option in
+                parts.enumerated().map { $0.offset == pinyinPartIndex ? option : $0.element }.joined()
             }
         }
 
@@ -303,7 +339,7 @@ public final class PinyinEngine {
             abbrCandidates = lexicon.abbrMatches(key: raw, limit: 8).map { entry in
                 // 词频 + 用户习惯：选过的简拼词排前（nh→你好 靠一次选择学会，
                 // 白霜里"你会"频次反而更高——完整表达的偏好只能来自用户）
-                let userBoost = 2 * log(1 + UserDictionary.shared.score(of: entry.word))
+                let userBoost = userScoreProvider.map { 2 * log(1 + $0(entry.word)) } ?? 0
                 return WordCandidate(
                     word: entry.word,
                     syllableCount: entry.key.split(separator: " ").count,
@@ -366,7 +402,8 @@ public final class PinyinEngine {
             segments: segments,
             localSentence: sentence.isEmpty ? nil : sentence,
             wordCandidates: candidates,
-            boundaryAlternatives: alternatives
+            boundaryAlternatives: alternatives,
+            localAlternatives: localAlternatives
         )
     }
 

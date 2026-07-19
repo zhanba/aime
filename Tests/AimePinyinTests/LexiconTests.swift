@@ -158,6 +158,29 @@ final class LexiconTests: XCTestCase {
         XCTAssertLessThan(zhongji, single)
     }
 
+    func testLocalAlternativesExposeSecondBest() throws {
+        // fangan 两种切法都是合法词：首选 方案（权重高），反感 应出现在句级备选
+        let engine = PinyinEngine(lexiconURL: lexiconURL)
+        let result = engine.analyze("fangan")
+        XCTAssertEqual(result.localSentence, "方案")
+        XCTAssertTrue(result.localAlternatives.contains("反感"), "\(result.localAlternatives)")
+        XCTAssertFalse(result.localAlternatives.contains("方案"), "备选不应重复首选")
+    }
+
+    func testUserScorePersonalizesSentenceAndCandidates() throws {
+        let engine = PinyinEngine(lexiconURL: lexiconURL)
+        // 默认关：不随机器上的 userdict 漂移
+        XCTAssertEqual(engine.analyze("fangan").localSentence, "方案")
+        // 注入用户评分：常选"反感"后整句与词候选都应翻转
+        engine.userScoreProvider = { $0 == "反感" ? 100 : 0 }
+        let personalized = engine.analyze("fangan")
+        XCTAssertEqual(personalized.localSentence, "反感")
+        XCTAssertEqual(personalized.wordCandidates.first?.word, "反感")
+        // 关掉恢复原判
+        engine.userScoreProvider = nil
+        XCTAssertEqual(engine.analyze("fangan").localSentence, "方案")
+    }
+
     func testEngineWithoutLexiconDegrades() {
         let engine = PinyinEngine(lexiconURL: URL(fileURLWithPath: "/nonexistent"))
         let result = engine.analyze("nihao")
