@@ -1,4 +1,5 @@
 import AimeASR
+import AimePinyin
 import AimeUI
 import AppKit
 import Carbon
@@ -23,6 +24,12 @@ enum DebugCLI {
         }
         if CommandLine.arguments.contains("--daemon-roundtrip") {
             runRoundtrip()
+            return
+        }
+        // 本地拼音 LLM 端到端验证：aime --pinyin-convert nihaoshijie
+        if let index = CommandLine.arguments.firstIndex(of: "--pinyin-convert"),
+           index + 1 < CommandLine.arguments.count {
+            runPinyinConvert(raw: CommandLine.arguments[index + 1])
             return
         }
         let reregister = CommandLine.arguments.contains("--daemon-reregister")
@@ -51,6 +58,24 @@ enum DebugCLI {
                 print("ping: \(pong)")
             } else {
                 print("ping: 失败（daemon 未运行、未批准或连接被拒）")
+            }
+            semaphore.signal()
+        }
+        semaphore.wait()
+        exit(0)
+    }
+
+    /// `--pinyin-convert <raw>`：经 XPC 走 daemon 的本地拼音 LLM（首次调用触发模型加载）
+    private static func runPinyinConvert(raw: String) {
+        let client = DaemonClient()
+        let semaphore = DispatchSemaphore(value: 0)
+        Task.detached {
+            let began = Date()
+            let fuzzyIDs = Array(SharedConfig.loadLLMConfig(includeAPIKey: false).enabledFuzzyRuleIDs)
+            if let sentence = await client.convertPinyin(raw: raw, fuzzyRuleIDs: fuzzyIDs) {
+                print("\(raw) → \(sentence)  (\(String(format: "%.2f", Date().timeIntervalSince(began)))s)")
+            } else {
+                print("转换失败（daemon 未运行 / 模型未就绪 / 无合法路径，详见 daemon 日志）")
             }
             semaphore.signal()
         }
