@@ -1050,6 +1050,9 @@ class AimeInputController: IMKInputController {
             )
             // 翻译态中只存结果不动 UI（避免打断译文候选浏览），退出翻译态时自然生效
             guard translationPhase == .none else { return }
+            // 用户已在候选栏翻页/移动高亮：不得重排——编号→词的映射在眼前变化
+            // 必然按错数字。结果已存，下一次按键 refresh 时自然并入
+            guard page == 0, highlighted == 0 else { return }
             rebuildCandidates()
             updateMarkedText()
         } catch {
