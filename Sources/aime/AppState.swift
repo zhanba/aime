@@ -66,6 +66,8 @@ final class AppState: ObservableObject {
         Settings.registerDefaults()
         Settings.normalizeCustomPrompts()
         Settings.migrateAPIKeyToKeychain()
+        // 老条目 ACL 里没有 IME（或建条目时 IME 还没安装），启动时按当前信任列表重建
+        KeychainStore.repairAccess()
         accessibilityGranted = ContextCapture.ensureAccessibilityPermission(prompt: true)
 
         hotkey.onPressDown = { [weak self] in Task { @MainActor in self?.hotkeyPressed() } }

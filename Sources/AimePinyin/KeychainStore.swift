@@ -2,12 +2,20 @@ import Foundation
 import Security
 
 /// LLM API Key 的钥匙串存取（login keychain 通用密码项），替代明文 UserDefaults。
-/// app 负责写入；aime-ime 等其他进程首次读取时系统弹一次授权，「始终允许」后静默
-/// （签名身份稳定时重新构建不会重弹）。swift build 直接产出的评测 CLI 无稳定签名，
-/// 每次重编译都会触发授权弹窗，用 AIME_API_KEY 环境变量绕过。
+/// app 负责写入，写入时把 aime.app 与 aime-ime.app 一并写进条目 ACL 信任列表，
+/// 两个进程读取都不弹授权（SecTrustedApplication 系 API 已废弃但无替代——
+/// 现代方案 keychain access group 需要 app group entitlement + Team ID，
+/// 等 Developer ID 签名落地时再迁）。swift build 直接产出的评测 CLI 不在信任列表，
+/// 读取会弹授权，用 AIME_API_KEY 环境变量绕过。
 public enum KeychainStore {
     private static let service = "com.zhanba.aime"
     private static let account = "llm-api-key"
+
+    /// ACL 信任的读取方：本进程 + 安装位置的 app 与 IME（路径不存在的自动跳过）
+    private static let trustedAppPaths = [
+        "/Applications/aime.app",
+        ("~/Library/Input Methods/aime-ime.app" as NSString).expandingTildeInPath,
+    ]
 
     /// 引擎读取入口：AIME_API_KEY 环境变量优先，其次钥匙串
     public static func loadAPIKey() -> String? {
@@ -28,19 +36,43 @@ public enum KeychainStore {
         return String(data: data, encoding: .utf8)
     }
 
-    /// 空串 = 删除条目
+    /// 空串 = 删除条目。始终删旧建新：ACL 只能在建条目时指定，
+    /// SecItemUpdate 不会补上后装的信任方
     public static func saveAPIKey(_ key: String) {
-        guard !key.isEmpty else {
-            SecItemDelete(baseQuery as CFDictionary)
-            return
+        SecItemDelete(baseQuery as CFDictionary)
+        guard !key.isEmpty else { return }
+        var query = baseQuery
+        query[kSecValueData as String] = Data(key.utf8)
+        if let access = makeAccess() {
+            query[kSecAttrAccess as String] = access
         }
-        let attrs = [kSecValueData as String: Data(key.utf8)]
-        let status = SecItemUpdate(baseQuery as CFDictionary, attrs as CFDictionary)
-        if status == errSecItemNotFound {
-            var query = baseQuery
-            query[kSecValueData as String] = Data(key.utf8)
-            SecItemAdd(query as CFDictionary, nil)
+        SecItemAdd(query as CFDictionary, nil)
+    }
+
+    /// app 启动时调用：把现存条目按当前信任列表重建。
+    /// 修复旧条目（无 ACL 或 IME 尚未安装时创建的），幂等
+    public static func repairAccess() {
+        guard let key = storedAPIKey(), !key.isEmpty else { return }
+        saveAPIKey(key)
+    }
+
+    private static func makeAccess() -> SecAccess? {
+        var trusted: [SecTrustedApplication] = []
+        var selfApp: SecTrustedApplication?
+        if SecTrustedApplicationCreateFromPath(nil, &selfApp) == errSecSuccess, let selfApp {
+            trusted.append(selfApp)
         }
+        for path in trustedAppPaths {
+            var app: SecTrustedApplication?
+            if SecTrustedApplicationCreateFromPath(path, &app) == errSecSuccess, let app {
+                trusted.append(app)
+            }
+        }
+        var access: SecAccess?
+        guard SecAccessCreate("aime LLM API Key" as CFString, trusted as CFArray, &access) == errSecSuccess else {
+            return nil
+        }
+        return access
     }
 
     private static var baseQuery: [String: Any] {
