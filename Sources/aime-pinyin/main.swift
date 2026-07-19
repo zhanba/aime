@@ -19,6 +19,8 @@ var gramPath: String?
 var gramWeightOverride: Double?
 var beamOverride: Int?
 var predictMode = false
+var nBest: Int?
+var dumpChars = false
 
 var args = Array(CommandLine.arguments.dropFirst())
 while !args.isEmpty {
@@ -34,6 +36,8 @@ while !args.isEmpty {
     case "--predict": predictMode = true
     case "--gram-weight": gramWeightOverride = Double(args.removeFirst())
     case "--beam": beamOverride = Int(args.removeFirst())
+    case "--nbest": nBest = Int(args.removeFirst())
+    case "--dump-chars": dumpChars = true
     default: inputs.append(arg)
     }
 }
@@ -81,6 +85,20 @@ if predictMode {
     exit(0)
 }
 
+// 字表导出（约束解码实验用）：音节 \t 字 \t 词频（词库单字条目，纯简体+校对注音）
+if dumpChars {
+    guard let lexicon = engine.lexicon else {
+        FileHandle.standardError.write(Data("词库未安装\n".utf8))
+        exit(1)
+    }
+    for syllable in PinyinTable.syllables.sorted() {
+        for entry in lexicon.exactMatches(key: syllable) where entry.word.count == 1 {
+            print("\(syllable)\t\(entry.word)\t\(entry.weight)")
+        }
+    }
+    exit(0)
+}
+
 if let suitePath {
     let tsv = try String(contentsOf: URL(fileURLWithPath: suitePath), encoding: .utf8)
     var cases: [(pinyin: String, expected: String)] = []
@@ -88,6 +106,44 @@ if let suitePath {
         let parts = line.split(separator: "\t", maxSplits: 1)
         guard parts.count == 2 else { continue }
         cases.append((String(parts[0]), String(parts[1])))
+    }
+    // n-best 导出模式（JSONL，重排/约束解码实验的输入）：
+    // {"pinyin","expected","candidates":[{"text","score"}],"lattices":[[[音节假设]]]}
+    // lattices = 主切分 + 边界变体（≤3 条），每条是逐位置的假设列表（正解+模糊音，partial 用补全）
+    if let nBest {
+        struct ExportCandidate: Codable { var text: String; var score: Double }
+        struct ExportCase: Codable {
+            var pinyin: String
+            var expected: String
+            var candidates: [ExportCandidate]
+            var lattices: [[[String]]]
+        }
+        func hypotheses(_ syllables: [Syllable]) -> [[String]] {
+            syllables.map { syllable in
+                syllable.source == .partial
+                    ? Array(syllable.completions.prefix(3))
+                    : [syllable.text] + Array(syllable.fuzzyAlternates.prefix(3))
+            }
+        }
+        let encoder = JSONEncoder()
+        for testCase in cases {
+            let candidates = engine.localNBest(testCase.pinyin, fuzzyRuleIDs: config.enabledFuzzyRuleIDs, limit: nBest)
+                .map { ExportCandidate(text: $0.sentence, score: $0.score) }
+            var lattices: [[[String]]] = []
+            let segments = PinyinSegmenter.segment(testCase.pinyin, enabledFuzzyRuleIDs: config.enabledFuzzyRuleIDs)
+            if segments.count == 1, case .pinyin(let syllables) = segments[0].kind {
+                lattices.append(hypotheses(syllables))
+                for variant in PinyinSegmenter.boundaryVariants(of: syllables, enabledFuzzyRuleIDs: config.enabledFuzzyRuleIDs).prefix(2) {
+                    lattices.append(hypotheses(variant))
+                }
+            }
+            let record = ExportCase(
+                pinyin: testCase.pinyin, expected: testCase.expected,
+                candidates: candidates, lattices: lattices
+            )
+            print(String(data: try encoder.encode(record), encoding: .utf8)!)
+        }
+        exit(0)
     }
     guard noLLM || !config.apiKey.isEmpty else {
         print("未配置 API key（aime 设置 → 精修），无法跑 LLM 准确率")

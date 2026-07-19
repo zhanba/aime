@@ -104,8 +104,14 @@ public struct SentenceComposer {
     /// 带总分版本：边界歧义多路径间择优用。
     /// gram 存在时是 beam Viterbi：转移分取决于句面尾部，每个位置按尾部去重保留 beamWidth 条路径。
     public func composeScored(syllables: [Syllable]) -> (sentence: String, score: Double) {
+        composeNBest(syllables: syllables, limit: 1).first ?? ("", -.infinity)
+    }
+
+    /// n-best：回溯 dp[count] 的全部 beam 终态。尾部互异保证句面互异，无需去重。
+    /// gram 缺失时单路径 Viterbi，最多 1 条。
+    public func composeNBest(syllables: [Syllable], limit: Int) -> [(sentence: String, score: Double)] {
         let count = syllables.count
-        guard count > 0 else { return ("", -.infinity) }
+        guard count > 0 else { return [] }
         struct Cell {
             var score: Double
             var previous: Int
@@ -178,18 +184,19 @@ public struct SentenceComposer {
             }
         }
 
-        guard let bestFinal = dp[count].indices.max(by: { dp[count][$0].score < dp[count][$1].score })
-        else { return ("", -.infinity) }
-        var words: [String] = []
-        var cursor = count
-        var beam = bestFinal
-        while cursor > 0 {
-            let cell = dp[cursor][beam]
-            words.append(cell.word)
-            beam = cell.previousBeam
-            cursor = cell.previous
+        let finals = dp[count].indices.sorted { dp[count][$0].score > dp[count][$1].score }
+        return finals.prefix(limit).map { finalIndex in
+            var words: [String] = []
+            var cursor = count
+            var beam = finalIndex
+            while cursor > 0 {
+                let cell = dp[cursor][beam]
+                words.append(cell.word)
+                beam = cell.previousBeam
+                cursor = cell.previous
+            }
+            return (words.reversed().joined(), dp[count][finalIndex].score)
         }
-        return (words.reversed().joined(), dp[count][bestFinal].score)
     }
 }
 
@@ -361,6 +368,30 @@ public final class PinyinEngine {
             wordCandidates: candidates,
             boundaryAlternatives: alternatives
         )
+    }
+
+    /// 本地整句 n-best（评测/重排实验用）：单一拼音段时回溯 beam 终态并合并边界变体；
+    /// 混输等其他形态退化为 [localSentence]。分数跨变体可比（同一打分体系）。
+    public func localNBest(
+        _ raw: String, fuzzyRuleIDs: Set<String> = FuzzyRule.defaultEnabled, limit: Int = 8
+    ) -> [(sentence: String, score: Double)] {
+        guard let composer else { return [] }
+        let segments = PinyinSegmenter.segment(raw, enabledFuzzyRuleIDs: fuzzyRuleIDs)
+        guard segments.count == 1, case .pinyin(let syllables) = segments[0].kind else {
+            let fallback = analyze(raw, fuzzyRuleIDs: fuzzyRuleIDs).localSentence
+            return fallback.map { [($0, 0)] } ?? []
+        }
+        var merged = composer.composeNBest(syllables: syllables, limit: limit)
+        for variant in PinyinSegmenter.boundaryVariants(of: syllables, enabledFuzzyRuleIDs: fuzzyRuleIDs) {
+            merged += composer.composeNBest(syllables: variant, limit: limit)
+        }
+        var seen = Set<String>()
+        var results: [(sentence: String, score: Double)] = []
+        for candidate in merged.sorted(by: { $0.score > $1.score }) where seen.insert(candidate.sentence).inserted {
+            results.append(candidate)
+            if results.count >= limit { break }
+        }
+        return results
     }
 
     /// 联想：语法模型后继候选 + 词库真词校验（搭配串无词边界，裸 remainder 可能拼错词）。
