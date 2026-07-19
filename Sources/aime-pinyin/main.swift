@@ -65,7 +65,9 @@ if gramPath != nil {
     FileHandle.standardError.write(Data("语法模型: \(engine.gram != nil ? "已加载" : "加载失败")\n".utf8))
 }
 
-let config = SharedConfig.loadLLMConfig()
+// 默认不读 Keychain（评测/调试模式不需要 API Key，读了会弹授权窗）；
+// 真要调 LLM 的分支就地升级成带 Key 的完整配置
+var config = SharedConfig.loadLLMConfig(includeAPIKey: false)
 let converter = PinyinConverter()
 
 func analyze(_ raw: String) -> [PinyinSegment] {
@@ -145,6 +147,7 @@ if let suitePath {
         }
         exit(0)
     }
+    if !noLLM { config = SharedConfig.loadLLMConfig() }
     guard noLLM || !config.apiKey.isEmpty else {
         print("未配置 API key（aime 设置 → 精修），无法跑 LLM 准确率")
         exit(1)
@@ -238,6 +241,7 @@ if let suitePath {
         print(String(format: "延迟: p50=%.2fs p90=%.2fs", sorted[sorted.count / 2], sorted[min(sorted.count - 1, sorted.count * 9 / 10)]))
     }
 } else if !inputs.isEmpty {
+    if !noLLM { config = SharedConfig.loadLLMConfig() }  // 单条调试要走 LLM，取 Key
     for raw in inputs {
         let result = engine.analyze(raw, fuzzyRuleIDs: config.enabledFuzzyRuleIDs)
         let segments = result.segments

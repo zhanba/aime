@@ -137,13 +137,16 @@ public enum SharedConfig {
         )
     }
 
-    public static func loadLLMConfig() -> PinyinLLMConfig {
+    /// includeAPIKey: false 时不触碰 Keychain（apiKey 为空串）。
+    /// 评测 CLI / 纯本地路径用——CLI 二进制不在 Keychain ACL 信任列表里，
+    /// 读取会弹授权窗；只有真要调 LLM 的路径才带 Key。
+    public static func loadLLMConfig(includeAPIKey: Bool = true) -> PinyinLLMConfig {
         let d = defaults
         let fuzzy = (d.array(forKey: "fuzzyRuleIDs") as? [String]).map(Set.init)
         return PinyinLLMConfig(
             apiBaseURL: d.string(forKey: "apiBaseURL") ?? "https://api.deepseek.com/v1",
             apiModel: d.string(forKey: "apiModel") ?? "deepseek-v4-flash",
-            apiKey: KeychainStore.loadAPIKey() ?? "",
+            apiKey: includeAPIKey ? (KeychainStore.loadAPIKey() ?? "") : "",
             enabledFuzzyRuleIDs: fuzzy ?? FuzzyRule.defaultEnabled,
             customPromptRefine: d.string(forKey: "customPromptRefine") ?? "",
             customPromptPinyin: d.string(forKey: "customPromptPinyin") ?? "",
