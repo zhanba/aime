@@ -123,6 +123,19 @@ let package = Package(
                 ])
             ]
         ),
+        // 本地拼音 LLM spike：Qwen3-0.6B 拼音约束 beam 解码（复用 Qwen3ASR 的
+        // QuantizedTextModel——ASR 0.6B 的文本骨干就是 Qwen3-0.6B）。评测/实验用。
+        .executableTarget(
+            name: "aime-llm",
+            dependencies: [
+                "AimePinyin",
+                .product(name: "Qwen3ASR", package: "qwen3-asr-swift")
+            ],
+            path: "Sources/aime-llm",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
         // ASR 评测 CLI：swift run aime-bench <wav...>；--suite 跑测试集出 CER 报告
         .executableTarget(
             name: "aime-bench",
