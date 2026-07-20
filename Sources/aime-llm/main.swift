@@ -7,19 +7,23 @@ import Foundation
 //
 // 用法:
 //   swift run -c release aime-llm --suite testdata/pinyin_testset_large.tsv \
-//     [--model <目录>] [--tokens <cjk_tokens.json>] [--beam 8] [--prior 0.2] \
-//     [--fuzzy-penalty 2.0] [--limit N] [--out <tsv>] [--probe]
+//     [--model <目录>] [--tokens <cjk_tokens.json>] [--beam 16] [--prior 0.0] \
+//     [--fuzzy-penalty 3.0] [--limit N] [--out <tsv>] [--probe]
 //
 // 模型/词元表缺省走 PinyinLocalDecoder 的默认路径（App Support → HF 缓存 / bundle）。
 // testdata/cjk_tokens.json 由 tokenizer 一次性导出，换模型需重导。
-// 结果（2026-07-19，560 句）：78.6% / p50 146ms（本地基线 50.9%，重排 65.0%，Python 参考 78.4%）
+// 评测集角色（holdout 纪律，2026-07-20）：
+//   pinyin_testset_large.tsv (560) 调参集 | pinyin_holdout.tsv (238) 开发集（已用于选参）
+//   pinyin_holdout_fuzzy.tsv (238) 模糊噪声集（holdout 同句注入六组模糊替换，测容错）
+//   pinyin_blind.tsv (147) 盲测集——只做最终验收，不得用于任何调参
+// 当前默认参数：560 句 81.2% | 开发集 67.2% | 模糊 63.0% | 盲测 61.2% / p50 247ms
 
 var modelDir: String?
 var tokensPath: String?
 var suitePath: String?
-var beamWidth = 8
-var priorW = 0.2
-var fuzzyPenalty = 2.0
+var beamWidth = 16
+var priorW = 0.0
+var fuzzyPenalty = 3.0
 var limit: Int?
 var outPath: String?
 var probeMode = false
@@ -31,7 +35,7 @@ while !args.isEmpty {
     case "--model": modelDir = args.removeFirst()
     case "--tokens": tokensPath = args.removeFirst()
     case "--suite": suitePath = args.removeFirst()
-    case "--beam": beamWidth = Int(args.removeFirst()) ?? 8
+    case "--beam": beamWidth = Int(args.removeFirst()) ?? 16
     case "--prior": priorW = Double(args.removeFirst()) ?? 0.2
     case "--fuzzy-penalty": fuzzyPenalty = Double(args.removeFirst()) ?? 2.0
     case "--limit": limit = Int(args.removeFirst())

@@ -6,7 +6,10 @@ import Qwen3ASR
 
 // 本地拼音 LLM（形态 A）：Qwen3-0.6B-4bit 拼音约束 beam 解码的可复用封装。
 // daemon（XPC 服务）与 aime-llm（评测 CLI）共用，保证评测数字就是线上行为。
-// 560 句：78.6% / p50 146ms（本地 Viterbi 基线 50.9%）。非线程安全——调用方负责串行。
+// 默认超参经 holdout 验证（2026-07-20）：调参集 560 句 81.2%、开发集 238 句 67.2%、
+// 模糊噪声集 63.0%、盲测集 147 句 61.2% / p50 247ms（各集本地 Viterbi 基线 50.9%/41.2%/40.8%/31.3%）。
+// prior 是调参集过拟合产物（holdout 上负收益）故归零；fuzzyPenalty 每 +1 约拿 1 分干净换 2 分
+// 模糊容错，3.0 是均衡点；beam 16→8 省 60ms 但模糊集掉 2.5pp。非线程安全——调用方负责串行。
 
 public struct CJKToken: Sendable {
     public let id: Int32
@@ -14,9 +17,9 @@ public struct CJKToken: Sendable {
 }
 
 public final class PinyinLocalDecoder {
-    public var beamWidth = 8
-    public var priorWeight = 0.2
-    public var fuzzyPenalty = 2.0
+    public var beamWidth = 16
+    public var priorWeight = 0.0
+    public var fuzzyPenalty = 3.0
 
     public let model: PinyinTextModel
     let byFirst: [Character: [CJKToken]]
