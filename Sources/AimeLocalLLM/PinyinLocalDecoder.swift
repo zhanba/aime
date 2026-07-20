@@ -6,10 +6,15 @@ import Qwen3ASR
 
 // 本地拼音 LLM（形态 A）：Qwen3-0.6B-4bit 拼音约束 beam 解码的可复用封装。
 // daemon（XPC 服务）与 aime-llm（评测 CLI）共用，保证评测数字就是线上行为。
-// 默认超参经 holdout 验证（2026-07-20）：调参集 560 句 81.2%、开发集 238 句 67.2%、
-// 模糊噪声集 63.0%、盲测集 147 句 61.2% / p50 247ms（各集本地 Viterbi 基线 50.9%/41.2%/40.8%/31.3%）。
+// 默认超参经 holdout 验证：调参集 560 句 81.4%、开发集 238 句 67.2%、模糊噪声集 63.0%、
+// 盲测集 147 句 62.6% / p50 ~247ms（各集本地 Viterbi 基线 50.9%/41.2%/40.8%/31.3%）。
 // prior 是调参集过拟合产物（holdout 上负收益）故归零；fuzzyPenalty 每 +1 约拿 1 分干净换 2 分
 // 模糊容错，3.0 是均衡点；beam 16→8 省 60ms 但模糊集掉 2.5pp。非线程安全——调用方负责串行。
+// 跨格子择优用整句 sum（2026-07-20 修正，原为逐字 avg，导致 xuanzhong→徐安忠 等常用整音节被
+// 3 音人名劫持）：盲测 61.2%→62.6%、调参 81.2%→81.4%，其余集持平、零回归（逐句 diff 无对→错）。
+
+/// 设 AIME_LLM_DUMP=1 时把每条格子的候选与 sum/avg 分打到 stderr（切分歧义排障用）。
+private let dumpLatticesFlag = ProcessInfo.processInfo.environment["AIME_LLM_DUMP"] != nil
 
 public struct CJKToken: Sendable {
     public let id: Int32
@@ -172,18 +177,28 @@ public final class PinyinLocalDecoder {
         var score: Double
     }
 
-    /// 多条格子（主切分+边界变体）各解一次，按字均分择优。无合法路径返回 nil。
-    /// context = 光标前文，注入为生成前缀（不进输出）；nil/空 = 无上下文。
+    /// 多条格子（主切分+边界变体）各解一次，按整句 log 概率（sum）择优——不是逐字均分。
+    /// 均分会让"拆更碎但每字更顺"的路径不当胜出（xuanzhong→徐安忠：3 音人名 avg 压过
+    /// 2 音「选中」）。整句 sum 下每多一个音节要多付一项负 log-prob，切分先验从 LM 自然
+    /// 掉出：常用整音节不会被劈开，而真词更多的拆分（shanchuan→删除按钮）靠词凝聚力仍能
+    /// 赢回该多付的那一项。无合法路径返回 nil。context = 光标前文（注入为前缀，不进输出）。
     public func convert(
         raw: String, fuzzyRuleIDs: Set<String>, context: String? = nil
     ) -> (sentence: String, avgScore: Double)? {
         let start = contextState(context)
         var best: (sentence: String, avgScore: Double)?
+        var bestTotal = -Double.infinity
         for lattice in Self.lattices(for: raw, fuzzyRuleIDs: fuzzyRuleIDs) {
             guard let maps = buildCharMaps(lattice) else { continue }
-            if let result = decode(charMaps: maps, start: start),
-               result.avgScore > (best?.avgScore ?? -.infinity) {
-                best = result
+            if let result = decode(charMaps: maps, start: start) {
+                if dumpLatticesFlag {
+                    FileHandle.standardError.write(Data(
+                        "  格子[\(maps.count)音]→\(result.sentence)  sum=\(String(format: "%.3f", result.total)) avg=\(String(format: "%.3f", result.avgScore))\n".utf8))
+                }
+                if result.total > bestTotal {
+                    best = (result.sentence, result.avgScore)
+                    bestTotal = result.total
+                }
             }
         }
         return best
@@ -192,7 +207,7 @@ public final class PinyinLocalDecoder {
     func decode(
         charMaps: [[Character: (prior: Double, penalty: Double)]],
         start: (cache: [(MLXArray, MLXArray)], logits: MLXArray)
-    ) -> (sentence: String, avgScore: Double)? {
+    ) -> (sentence: String, avgScore: Double, total: Double)? {
         let n = charMaps.count
         var allowed: [[(token: CJKToken, prior: Double, penalty: Double)]] = []
         for pos in 0 ..< n {
@@ -278,7 +293,7 @@ public final class PinyinLocalDecoder {
         }
 
         guard let best = finished.max(by: { $0.score < $1.score }) else { return nil }
-        return (best.text, best.score / Double(n))
+        return (best.text, best.score / Double(n), best.score)
     }
 
     // MARK: - 默认资源路径

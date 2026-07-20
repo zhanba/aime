@@ -17,7 +17,8 @@ import Foundation
 //   pinyin_holdout_fuzzy.tsv (238) 模糊噪声集（holdout 同句注入六组模糊替换，测容错）
 //   pinyin_blind.tsv (147) 盲测集——只做最终验收，不得用于任何调参
 //   pinyin_context.tsv (36) 上下文消歧集（三列：拼音\t期望\t上下文；--ignore-context 做对照）
-// 当前默认参数：560 句 81.2% | 开发集 67.2% | 模糊 63.0% | 盲测 61.2% / p50 247ms
+// 当前默认参数：560 句 81.4% | 开发集 67.2% | 模糊 63.0% | 盲测 62.6% / p50 247ms
+// （跨格子择优用整句 sum 而非逐字 avg，根治常用整音节被拆成人名/错词，如 xuanzhong→徐安忠）
 // 上下文注入（2026-07-20）：消歧集 44.4% → 66.7%，无上下文路径零漂移，开销 ~6ms
 
 var modelDir: String?
