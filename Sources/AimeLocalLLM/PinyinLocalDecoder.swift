@@ -72,7 +72,50 @@ public final class PinyinLocalDecoder {
 
     /// 首次前向含 Metal JIT（可达秒级），加载后调用一次把它排除在请求路径外。
     public func warmup() {
-        _ = convert(raw: "nihao", fuzzyRuleIDs: [])
+        _ = convert(raw: "nihao", fuzzyRuleIDs: [], context: "你好")
+    }
+
+    // MARK: - 上下文（光标前文）注入
+
+    /// 上下文只取末尾这么多字：更早的内容对下一句的约束弱，还拖长 prefill。
+    static let maxContextChars = 24
+
+    /// 无 BPE tokenizer，用 CJK 词元表贪心最长匹配编码；表外字符（英文/标点/数字）跳过。
+    /// 上下文只影响先验不进输出，丢字符可接受。
+    static func encodeContext(_ text: String, byFirst: [Character: [CJKToken]]) -> [Int32] {
+        let chars = Array(text.suffix(maxContextChars))
+        var ids: [Int32] = []
+        var i = 0
+        while i < chars.count {
+            var best: CJKToken?
+            for token in byFirst[chars[i]] ?? [] {
+                guard token.chars.count > (best?.chars.count ?? 0),
+                      i + token.chars.count <= chars.count else { continue }
+                if zip(token.chars, chars[i ..< i + token.chars.count]).allSatisfy(==) {
+                    best = token
+                }
+            }
+            if let best {
+                ids.append(best.id)
+                i += best.chars.count
+            } else {
+                i += 1
+            }
+        }
+        return ids
+    }
+
+    /// 上下文 prefill：接在固定 prompt 的 KV 后（batch=1、带 offset，vendored RoPE/mask 已支持）。
+    /// 每请求一次前向，~20 token 量级，开销远小于 beam 解码本身。
+    func contextState(_ context: String?) -> (cache: [(MLXArray, MLXArray)], logits: MLXArray) {
+        guard let context, !context.isEmpty else { return (promptCache, promptLogits) }
+        let ids = Self.encodeContext(context, byFirst: byFirst)
+        guard !ids.isEmpty else { return (promptCache, promptLogits) }
+        let input = MLXArray(ids).expandedDimensions(axis: 0)
+        let (hidden, cache) = model(inputIds: input, cache: promptCache)
+        let logits = lmHead(hidden[0..., hidden.dim(1) - 1, 0...])
+        eval(logits)
+        return (cache, logits)
     }
 
     public func lmHead(_ hidden: MLXArray) -> MLXArray {
@@ -130,18 +173,26 @@ public final class PinyinLocalDecoder {
     }
 
     /// 多条格子（主切分+边界变体）各解一次，按字均分择优。无合法路径返回 nil。
-    public func convert(raw: String, fuzzyRuleIDs: Set<String>) -> (sentence: String, avgScore: Double)? {
+    /// context = 光标前文，注入为生成前缀（不进输出）；nil/空 = 无上下文。
+    public func convert(
+        raw: String, fuzzyRuleIDs: Set<String>, context: String? = nil
+    ) -> (sentence: String, avgScore: Double)? {
+        let start = contextState(context)
         var best: (sentence: String, avgScore: Double)?
         for lattice in Self.lattices(for: raw, fuzzyRuleIDs: fuzzyRuleIDs) {
             guard let maps = buildCharMaps(lattice) else { continue }
-            if let result = decode(charMaps: maps), result.avgScore > (best?.avgScore ?? -.infinity) {
+            if let result = decode(charMaps: maps, start: start),
+               result.avgScore > (best?.avgScore ?? -.infinity) {
                 best = result
             }
         }
         return best
     }
 
-    func decode(charMaps: [[Character: (prior: Double, penalty: Double)]]) -> (sentence: String, avgScore: Double)? {
+    func decode(
+        charMaps: [[Character: (prior: Double, penalty: Double)]],
+        start: (cache: [(MLXArray, MLXArray)], logits: MLXArray)
+    ) -> (sentence: String, avgScore: Double)? {
         let n = charMaps.count
         var allowed: [[(token: CJKToken, prior: Double, penalty: Double)]] = []
         for pos in 0 ..< n {
@@ -167,8 +218,8 @@ public final class PinyinLocalDecoder {
         }
 
         var paths = [Path(text: "", pos: 0, score: 0)]
-        var cache = promptCache
-        var logits = promptLogits
+        var cache = start.cache
+        var logits = start.logits
         var finished: [Path] = []
 
         while !paths.isEmpty {

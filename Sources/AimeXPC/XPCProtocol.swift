@@ -23,10 +23,13 @@ public let aimeDaemonMachServiceName = "com.zhanba.aime.daemon"
 public struct PinyinConvertRequest: Codable, Sendable {
     public var raw: String
     public var fuzzyRuleIDs: [String]
+    /// 光标前文（可选）：注入本地解码做上下文条件。Optional 保证与旧版 daemon/客户端互通。
+    public var context: String?
 
-    public init(raw: String, fuzzyRuleIDs: [String]) {
+    public init(raw: String, fuzzyRuleIDs: [String], context: String? = nil) {
         self.raw = raw
         self.fuzzyRuleIDs = fuzzyRuleIDs
+        self.context = context
     }
 }
 

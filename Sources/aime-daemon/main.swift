@@ -135,7 +135,9 @@ final class PinyinLLMService {
                 reply(nil, self.loadError ?? "本地拼音模型未加载")
                 return
             }
-            let result = decoder.convert(raw: request.raw, fuzzyRuleIDs: Set(request.fuzzyRuleIDs))
+            let result = decoder.convert(
+                raw: request.raw, fuzzyRuleIDs: Set(request.fuzzyRuleIDs),
+                context: request.context)
             reply(result?.sentence, nil)
         }
     }

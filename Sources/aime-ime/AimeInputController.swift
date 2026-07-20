@@ -1039,7 +1039,12 @@ class AimeInputController: IMKInputController {
         // 屏蔽应用限制；成功即替代云端，失败静默降级到下面的云端路径
         if SharedConfig.localLLMEnabled, Self.daemonAvailable {
             let fuzzyIDs = Array(SharedConfig.loadLLMConfig(includeAPIKey: false).enabledFuzzyRuleIDs)
-            if let sentence = await Self.daemonClient.convertPinyin(raw: snapshot, fuzzyRuleIDs: fuzzyIDs),
+            // 上下文条件解码：推理纯本地，但读屏本身尊重按应用屏蔽；已确认段始终可用
+            var localContext = clientBlocked ? "" : (contextBeforeCursor() ?? "")
+            localContext += confirmedText
+            if let sentence = await Self.daemonClient.convertPinyin(
+                raw: snapshot, fuzzyRuleIDs: fuzzyIDs,
+                context: localContext.isEmpty ? nil : localContext),
                !sentence.isEmpty {
                 guard snapshot == rawBuffer, !voiceRecording else { return }
                 llmConversion = PinyinConversion(best: sentence)

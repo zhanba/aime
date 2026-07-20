@@ -116,6 +116,10 @@
 > **2026-07-20 分发与开关**：LocalLLMInstaller（model.safetensors 单文件 ~320MB，HF 主源 + hf-mirror 回退，
 > 流式下载+safetensors 校验）+ 设置页拼音 tab"本地整句模型"区（下载管理 + 开关，开时未装自动下载）；
 > daemon 资源缺失类加载失败改为可重试（下载补齐后无需重启 daemon）。
+>
+> **2026-07-20 上下文注入解码**：光标前文（CJK 词元贪心编码，取末 24 字）接在固定 prompt KV 后增量
+> prefill，beam 从上下文态起步。消歧集（testdata/pinyin_context.tsv，36 例成对反事实）44.4% → 66.7%，
+> 他/她成对翻转全对；无上下文路径零漂移（holdout 67.2% 不变），开销 ~6ms。IME 侧读屏尊重按应用屏蔽。
 
 - [ ] 拼音小模型：Qwen3 系 1–3B 微调，训练数据程序化合成（语料→注音→注入模糊音/键盘噪声）
 - [x] **拼音约束解码**：Swift 拼音约束 beam 解码器（aime-llm/AimeLocalLLM，daemon+IME 已接入，超参已过 holdout）
