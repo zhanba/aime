@@ -107,6 +107,10 @@ final class PinyinLLMService {
     private var decoder: PinyinLocalDecoder?
     private var loadAttempted = false
     private var loadError: String?
+    /// 上次失败是资源缺失（模型/词元表/词库文件不在）——用户在 app 里下载补齐后要能
+    /// 不重启 daemon 就恢复，所以这类失败允许重试（守卫只是文件存在性检查，很便宜）；
+    /// 真加载异常（权重损坏等）仍一次性锁死，避免每次按键重复大加载。
+    private var resourcesMissing = false
     private let lock = NSLock()
     private var latestGeneration = 0
 
@@ -123,7 +127,7 @@ final class PinyinLLMService {
                 reply(nil, nil)
                 return
             }
-            if !self.loadAttempted {
+            if !self.loadAttempted || (self.decoder == nil && self.resourcesMissing) {
                 self.loadAttempted = true
                 self.loadDecoder()
             }
@@ -138,17 +142,21 @@ final class PinyinLLMService {
 
     private func loadDecoder() {
         guard let modelDir = PinyinLocalDecoder.defaultModelDir() else {
-            loadError = "本地拼音模型目录缺失（App Support/aime/models 或 HF 缓存）"
+            loadError = "本地拼音模型未下载（设置 → 拼音 → 本地整句模型）"
+            resourcesMissing = true
             return
         }
         guard let tokenTable = PinyinLocalDecoder.defaultTokenTableURL() else {
             loadError = "词元表缺失（App Support/aime/cjk_tokens.json）"
+            resourcesMissing = true
             return
         }
         guard let lexicon = Lexicon(url: Lexicon.defaultURL) else {
             loadError = "词库未安装"
+            resourcesMissing = true
             return
         }
+        resourcesMissing = false
         do {
             let began = Date()
             let decoder = try PinyinLocalDecoder(

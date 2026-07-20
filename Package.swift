@@ -45,7 +45,7 @@ let package = Package(
         .executableTarget(
             name: "aime",
             dependencies: [
-                "AimeASR", "AimePinyin", "AimeUI",
+                "AimeASR", "AimeLocalLLM", "AimePinyin", "AimeUI",
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/aime",

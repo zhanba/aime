@@ -6,8 +6,10 @@ struct PinyinSettingsTab: View {
     @State private var enabledRules: Set<String> = Settings.current().fuzzyRuleIDs
     @ObservedObject private var lexicon = LexiconInstaller.shared
     @ObservedObject private var gram = GramInstaller.shared
+    @ObservedObject private var localLLM = LocalLLMInstaller.shared
     @State private var imeInstalled = IMEInstaller.isInstalled
     @State private var chinesePunctuation = SharedConfig.chinesePunctuation
+    @State private var localLLMEnabled = SharedConfig.localLLMEnabled
     @State private var installMessage: String?
     @State private var installFailed = false
 
@@ -33,6 +35,21 @@ struct PinyinSettingsTab: View {
                 Text("语法模型")
             } footer: {
                 Text("词语搭配知识，大幅提升整句准确率。数据来自万象拼音 LMDG（CC-BY-4.0）。")
+            }
+
+            Section {
+                localLLMRow
+                Toggle("用本地模型整句转换", isOn: $localLLMEnabled)
+                    .onChange(of: localLLMEnabled) { _, enabled in
+                        SharedConfig.mirrorLocalLLMEnabled(enabled)
+                        if enabled, localLLM.installedInfo == nil {
+                            localLLM.install()
+                        }
+                    }
+            } header: {
+                Text("本地整句模型")
+            } footer: {
+                Text("Qwen3-0.6B 在本地做整句转换（约 320MB，Apache 2.0），无需联网与 API Key，比云端快约 4 倍；失败自动回退云端。")
             }
 
             Section("输入") {
@@ -139,6 +156,36 @@ struct PinyinSettingsTab: View {
             case .idle:
                 if gram.installedInfo != nil {
                     Button("检查更新") { gram.install() }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var localLLMRow: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(localLLM.installedInfo ?? "模型未下载")
+                switch localLLM.phase {
+                case .idle:
+                    EmptyView()
+                case .downloading(let text):
+                    Text(text).font(.caption).foregroundStyle(.secondary)
+                case .failed(let message):
+                    Text(message).font(.caption).foregroundStyle(.red)
+                }
+            }
+            Spacer()
+            switch localLLM.phase {
+            case .downloading:
+                ProgressView().controlSize(.small)
+            case .failed:
+                Button("重试") { localLLM.install() }
+            case .idle:
+                if localLLM.installedInfo == nil {
+                    Button("下载模型") { localLLM.install() }
+                } else {
+                    Button("删除") { localLLM.delete() }
                 }
             }
         }

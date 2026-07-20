@@ -112,6 +112,10 @@
 > 四集数字：调参集 560 句 81.2%、开发集 238 句 67.2%、模糊噪声集 63.0%、盲测集 147 句 61.2%（p50 247ms；各集本地基线 50.9%/41.2%/40.8%/31.3%）。
 > 评测集角色纪律见 `Sources/aime-llm/main.swift` 头注释；盲测集 `testdata/pinyin_blind.tsv` 不得用于调参。
 > 剩余高频错误：的/得类准歧义、切分变体——上下文注入与微调（形态 C）的目标。
+>
+> **2026-07-20 分发与开关**：LocalLLMInstaller（model.safetensors 单文件 ~320MB，HF 主源 + hf-mirror 回退，
+> 流式下载+safetensors 校验）+ 设置页拼音 tab"本地整句模型"区（下载管理 + 开关，开时未装自动下载）；
+> daemon 资源缺失类加载失败改为可重试（下载补齐后无需重启 daemon）。
 
 - [ ] 拼音小模型：Qwen3 系 1–3B 微调，训练数据程序化合成（语料→注音→注入模糊音/键盘噪声）
 - [x] **拼音约束解码**：Swift 拼音约束 beam 解码器（aime-llm/AimeLocalLLM，daemon+IME 已接入，超参已过 holdout）
