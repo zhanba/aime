@@ -125,6 +125,18 @@ class AimeInputController: IMKInputController {
 
     private var lastCommit: CommitRecord?
 
+    // 最近上屏缓冲：部分应用（Electron 系编辑器等）不实现 selectedRange/attributedSubstring，
+    // contextBeforeCursor() 读不到光标前文，LLM 只能裸解（句首偏置出「事后/夜不准」类错）。
+    // 输入法自己提交过的文本不依赖宿主配合，作为读不到时的兜底上下文。
+    // 同步规则见 syncRecentCommittedForPassthrough；鼠标点击对输入法不可见，失真面靠
+    // 焦点切换清空 + 长度上限兜底（上下文只影响解码先验，输出仍受拼音格子约束）。
+    private var recentCommitted = ""
+    private static let recentCommittedCap = 48
+
+    private func appendRecentCommitted(_ text: String) {
+        recentCommitted = String((recentCommitted + text).suffix(Self.recentCommittedCap))
+    }
+
     // 联想态：上屏后候选栏显示后继词预测（组合区为空）。
     // 数字/空格选中追加上屏并连续联想；打字/Esc/翻页外的其他键退出。
     private var predicting = false
@@ -145,6 +157,7 @@ class AimeInputController: IMKInputController {
         PinyinEngine.shared.reloadIfChanged()
         PinyinEngine.shared.personalized = true
         UserDictionary.shared.reload()
+        recentCommitted = ""  // 焦点已切换，旧缓冲与新光标前文无关
         resetAll()
         Task { @MainActor in
             Self.daemonAvailable = await Self.daemonClient.ping() != nil
@@ -234,8 +247,10 @@ class AimeInputController: IMKInputController {
             }
             if let mapped = Self.punctuationMap[characters], SharedConfig.chinesePunctuation {
                 client()?.insertText(mapped, replacementRange: Self.replacementRange)
+                appendRecentCommitted(mapped)
                 return true
             }
+            syncRecentCommittedForPassthrough(event)
             return false
         }
 
@@ -355,7 +370,7 @@ class AimeInputController: IMKInputController {
         debounceTask?.cancel()
 
         let asrConfig = SharedConfig.loadASRConfig()
-        var contextHint = (contextBeforeCursor() ?? "") + confirmedText
+        var contextHint = typingContext()
         if !clientBlocked {
             let hotwords = UserDictionary.shared.topEntries(12).joined(separator: "、")
             if !hotwords.isEmpty {
@@ -485,7 +500,7 @@ class AimeInputController: IMKInputController {
         refinePendingText = raw
         rebuildCandidates()
         updateMarkedText()
-        let context = (contextBeforeCursor() ?? "") + confirmedText
+        let context = typingContext()
         Self.voiceOverlayModel.usedContext = !context.isEmpty
         // 与 app 热键路径一致：精修期间浮层先展示原文，流式结果到达后逐步替换
         Self.voiceOverlayModel.liveTranscript = raw
@@ -704,6 +719,7 @@ class AimeInputController: IMKInputController {
             let stackSnapshot = confirmedStack
             let bufferSnapshot = rawBuffer
             client.insertText(text, replacementRange: Self.replacementRange)
+            appendRecentCommitted(text)
             let cursor = client.selectedRange().location
             lastCommit = CommitRecord(
                 text: text, date: Date(), cursorAfter: cursor,
@@ -734,6 +750,7 @@ class AimeInputController: IMKInputController {
 
     private func commitPrediction(_ text: String) {
         client()?.insertText(text, replacementRange: Self.replacementRange)
+        appendRecentCommitted(text)
         let context = predictionContext + text
         exitPrediction()
         enterPrediction(context: context)  // 连续联想
@@ -762,6 +779,11 @@ class AimeInputController: IMKInputController {
         guard cursor >= length else { return false }
         // 删掉刚上屏的文本，恢复组合态
         client.insertText("", replacementRange: NSRange(location: cursor - length, length: length))
+        if recentCommitted.hasSuffix(record.text) {
+            recentCommitted.removeLast(record.text.count)
+        } else {
+            recentCommitted = ""
+        }
         confirmedStack = record.stack
         rawBuffer = record.rawBuffer
         if !rawBuffer.isEmpty {
@@ -1039,9 +1061,8 @@ class AimeInputController: IMKInputController {
         // 屏蔽应用限制；成功即替代云端，失败静默降级到下面的云端路径
         if SharedConfig.localLLMEnabled, Self.daemonAvailable {
             let fuzzyIDs = Array(SharedConfig.loadLLMConfig(includeAPIKey: false).enabledFuzzyRuleIDs)
-            // 上下文条件解码：推理纯本地，但读屏本身尊重按应用屏蔽；已确认段始终可用
-            var localContext = clientBlocked ? "" : (contextBeforeCursor() ?? "")
-            localContext += confirmedText
+            // 上下文条件解码：推理纯本地，但读屏/缓冲尊重按应用屏蔽；已确认段始终可用
+            let localContext = typingContext()
             if let sentence = await Self.daemonClient.convertPinyin(
                 raw: snapshot, fuzzyRuleIDs: fuzzyIDs,
                 context: localContext.isEmpty ? nil : localContext),
@@ -1062,8 +1083,7 @@ class AimeInputController: IMKInputController {
         guard !SharedConfig.pureLocalMode, !clientBlocked else { return }
         let config = SharedConfig.loadLLMConfig()
         guard !config.apiKey.isEmpty else { return }
-        var context = contextBeforeCursor() ?? ""
-        context += confirmedText
+        let context = typingContext()
         do {
             let result = try await PinyinConverter().convert(
                 raw: snapshot,
@@ -1095,6 +1115,36 @@ class AimeInputController: IMKInputController {
 
     private var clientBlocked: Bool {
         SharedConfig.isBlocked(bundleID: client()?.bundleIdentifier())
+    }
+
+    /// 非组合态放行给应用的按键会改动光标前文，最近上屏缓冲跟着同步：
+    /// 可见字符追加、退格删末字、移动光标的键清空（此后缓冲与光标前文脱节）。
+    private func syncRecentCommittedForPassthrough(_ event: NSEvent) {
+        switch event.keyCode {
+        case 51: // Backspace
+            if !recentCommitted.isEmpty { recentCommitted.removeLast() }
+        case 117: // Forward Delete：光标前文不变
+            break
+        case 36, 76: // Enter：换行/发送后前文语义仍连续（聊天场景上一条就是上下文）
+            break
+        case 115, 116, 119, 121, 123, 124, 125, 126: // Home/PgUp/End/PgDn/方向键
+            recentCommitted = ""
+        default:
+            if let chars = event.characters, !chars.isEmpty,
+               chars.unicodeScalars.allSatisfy({ $0.value >= 0x20 }) {
+                appendRecentCommitted(chars)
+            }
+        }
+    }
+
+    /// 打字/语音共用的光标前文：读屏优先，读不到（应用不支持或被屏蔽）用最近上屏缓冲兜底，
+    /// 再接当前组合的已确认段。屏蔽应用内读屏与缓冲都不用（缓冲可能含该应用内的敏感输入），
+    /// 只保留已确认段。
+    private func typingContext() -> String {
+        guard !clientBlocked else { return confirmedText }
+        var before = contextBeforeCursor() ?? ""
+        if before.isEmpty { before = recentCommitted }
+        return before + confirmedText
     }
 
     private func contextBeforeCursor() -> String? {

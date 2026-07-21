@@ -27,6 +27,12 @@ public final class PinyinLocalDecoder {
     public var beamWidth = 16
     public var priorWeight = 0.0
     public var fuzzyPenalty = 3.0
+    /// 无上下文时输出接在"句子："后＝句首条件解码，系统性压制非句首词（shihou→事后、
+    /// yiding→一顶、yebuzhun→夜不准）。≤ 此音节数且无上下文时注入口语中性前缀「嗯」把
+    /// 位置挪到句中（短词 dev 46/50→50/50、短词 holdout 43/45→44/45）；整段注入在整句
+    /// holdout 上互有胜负（净 −1/238），故只对短输入启用。阈值 6 过三套整句集零回归、
+    /// 调参集还 +1（滴滴油窗火热→弟弟又闯祸了）。0 = 关闭。
+    public var neutralPrefixMaxSyllables = 6
 
     public let model: PinyinTextModel
     let byFirst: [Character: [CJKToken]]
@@ -34,6 +40,8 @@ public final class PinyinLocalDecoder {
     let syllableChars: [String: [Character: Double]]
     let promptCache: [(MLXArray, MLXArray)]
     let promptLogits: MLXArray
+    let neutralCache: [(MLXArray, MLXArray)]
+    let neutralLogits: MLXArray
 
     struct TokenTable: Decodable {
         let promptIds: [Int]
@@ -76,6 +84,20 @@ public final class PinyinLocalDecoder {
         self.promptLogits = model.embedTokens.asLinear(
             promptHidden[0..., promptHidden.dim(1) - 1, 0...])
         eval(self.promptLogits)
+
+        // 中性前缀「嗯」的 KV 同样只算一次（短输入无上下文时用，见 neutralPrefixMaxSyllables）
+        let neutralIds = Self.encodeContext("嗯", byFirst: byFirst)
+        if neutralIds.isEmpty {
+            self.neutralCache = promptCache
+            self.neutralLogits = self.promptLogits
+        } else {
+            let neutralInput = MLXArray(neutralIds).expandedDimensions(axis: 0)
+            let (neutralHidden, neutralCache) = model(inputIds: neutralInput, cache: promptCache)
+            self.neutralCache = neutralCache
+            self.neutralLogits = model.embedTokens.asLinear(
+                neutralHidden[0..., neutralHidden.dim(1) - 1, 0...])
+            eval(self.neutralLogits)
+        }
     }
 
     /// 首次前向含 Metal JIT（可达秒级），加载后调用一次把它排除在请求路径外。
@@ -115,10 +137,7 @@ public final class PinyinLocalDecoder {
 
     /// 上下文 prefill：接在固定 prompt 的 KV 后（batch=1、带 offset，vendored RoPE/mask 已支持）。
     /// 每请求一次前向，~20 token 量级，开销远小于 beam 解码本身。
-    func contextState(_ context: String?) -> (cache: [(MLXArray, MLXArray)], logits: MLXArray) {
-        guard let context, !context.isEmpty else { return (promptCache, promptLogits) }
-        let ids = Self.encodeContext(context, byFirst: byFirst)
-        guard !ids.isEmpty else { return (promptCache, promptLogits) }
+    func contextState(ids: [Int32]) -> (cache: [(MLXArray, MLXArray)], logits: MLXArray) {
         let input = MLXArray(ids).expandedDimensions(axis: 0)
         let (hidden, cache) = model(inputIds: input, cache: promptCache)
         let logits = lmHead(hidden[0..., hidden.dim(1) - 1, 0...])
@@ -188,10 +207,21 @@ public final class PinyinLocalDecoder {
     public func convert(
         raw: String, fuzzyRuleIDs: Set<String>, context: String? = nil
     ) -> (sentence: String, avgScore: Double)? {
-        let start = contextState(context)
+        let lattices = Self.lattices(for: raw, fuzzyRuleIDs: fuzzyRuleIDs)
+        guard let primary = lattices.first else { return nil }
+        // 上下文可能全是 ASCII（英文/数字前文），编码后为空——等同无上下文，走中性前缀判断
+        let contextIds = context.map { Self.encodeContext($0, byFirst: byFirst) } ?? []
+        let start: (cache: [(MLXArray, MLXArray)], logits: MLXArray)
+        if !contextIds.isEmpty {
+            start = contextState(ids: contextIds)
+        } else if primary.count <= neutralPrefixMaxSyllables {
+            start = (neutralCache, neutralLogits)
+        } else {
+            start = (promptCache, promptLogits)
+        }
         var best: (sentence: String, avgScore: Double)?
         var bestTotal = -Double.infinity
-        for lattice in Self.lattices(for: raw, fuzzyRuleIDs: fuzzyRuleIDs) {
+        for lattice in lattices {
             guard let maps = buildCharMaps(lattice) else { continue }
             if let result = decode(charMaps: maps, start: start) {
                 if dumpLatticesFlag {

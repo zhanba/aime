@@ -9,7 +9,7 @@ import Qwen3ASR
 // 用法:
 //   swift run -c release aime-llm --suite testdata/pinyin_testset_large.tsv \
 //     [--model <目录>] [--tokens <cjk_tokens.json>] [--beam 16] [--prior 0.0] \
-//     [--fuzzy-penalty 3.0] [--limit N] [--out <tsv>] [--probe]
+//     [--fuzzy-penalty 3.0] [--neutral-max 4] [--limit N] [--out <tsv>] [--probe]
 //
 // 模型/词元表缺省走 PinyinLocalDecoder 的默认路径（App Support → HF 缓存 / bundle）。
 // testdata/cjk_tokens.json 由 tokenizer 一次性导出，换模型需重导。
@@ -18,6 +18,8 @@ import Qwen3ASR
 //   pinyin_holdout_fuzzy.tsv (238) 模糊噪声集（holdout 同句注入六组模糊替换，测容错）
 //   pinyin_blind.tsv (147) 盲测集——只做最终验收，不得用于任何调参
 //   pinyin_context.tsv (36) 上下文消歧集（三列：拼音\t期望\t上下文；--ignore-context 做对照）
+//   pinyin_short_dev.tsv (50) 常用短词调参集（无上下文裸解，调 --neutral-max 用）
+//   pinyin_short_holdout.tsv (45) 常用短词验收集——不得用于调参
 // 当前默认 = Qwen3-1.7B-4bit（2026-07-21 由 0.6B 升级，--model-size small 走 0.6B 对照）：
 // 调参 83.9% | 开发 68.1% | 模糊 67.6% | 盲测 66.0% / p50 ~500ms（0.6B 同参 81.4/67.2/63.0/62.6，p50 247ms）
 // （跨格子择优用整句 sum 而非逐字 avg，根治常用整音节被拆成人名/错词，如 xuanzhong→徐安忠）
@@ -36,6 +38,7 @@ var modelSize = "large"  // large=1.7B(.large config，线上默认) | small=0.6
 var convertRaw: String?  // 单句模式（可配 --context），手工验证用
 var contextText: String?
 var ignoreContext = false  // 三列 suite 忽略上下文列（对照组）
+var neutralMax: Int?  // 中性前缀「嗯」的音节数上限（0=关，缺省用解码器默认）
 
 var args = Array(CommandLine.arguments.dropFirst())
 while !args.isEmpty {
@@ -54,6 +57,7 @@ while !args.isEmpty {
     case "--convert": convertRaw = args.removeFirst()
     case "--context": contextText = args.removeFirst()
     case "--ignore-context": ignoreContext = true
+    case "--neutral-max": neutralMax = Int(args.removeFirst())
     default:
         FileHandle.standardError.write(Data("未知参数: \(arg)\n".utf8))
         exit(2)
@@ -86,6 +90,7 @@ let decoder = try PinyinLocalDecoder(
 decoder.beamWidth = beamWidth
 decoder.priorWeight = priorW
 decoder.fuzzyPenalty = fuzzyPenalty
+if let neutralMax { decoder.neutralPrefixMaxSyllables = neutralMax }
 FileHandle.standardError.write(Data("模型加载 \(String(format: "%.1f", Date().timeIntervalSince(began)))s（\(resolvedModelDir.path)）\n".utf8))
 
 if probeMode {
