@@ -88,8 +88,8 @@ public enum SharedConfig {
         defaults.object(forKey: "predictionEnabled") as? Bool ?? false
     }
 
-    /// 本地拼音 LLM（形态 A 约束解码，daemon 常驻 Qwen3-0.6B）。默认关，设置页拼音 tab 可开。
-    /// 开时替代云端整句转换（盲测 61.2% / p50 ~250ms vs 云端 ~970ms），失败自动降级云端。
+    /// 本地拼音 LLM（形态 A 约束解码，daemon 常驻 Qwen3-1.7B）。默认关，设置页拼音 tab 可开。
+    /// 开时替代云端整句转换（盲测 66.0% / p50 ~500ms vs 云端 ~970ms），失败自动降级云端。
     public static var localLLMEnabled: Bool {
         defaults.object(forKey: "localLLMEnabled") as? Bool ?? false
     }

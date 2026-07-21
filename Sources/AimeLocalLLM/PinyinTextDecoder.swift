@@ -9,7 +9,8 @@ import Qwen3ASR
 // MLXNN.RoPE 的 offset 路径在 batch>1 时输出脏数据（probe7/8/9 实证：相同两行输入、
 // 输出行差 2.14，且不是简单的位置错位）——beam 批量解码依赖 batch 正确性，
 // 这里改用手写的 batch-safe RoPE。其余结构与上游一致，权重布局兼容
-// mlx-community/Qwen3-0.6B-4bit（model.* 前缀，tie embeddings 无 lm_head）。
+// mlx-community/Qwen3-{0.6B,1.7B}-4bit（同架构，仅维度差异走 TextDecoderConfig；
+// model.* 前缀，tie embeddings 无 lm_head）。
 
 /// batch-safe RoPE（split-half，非 traditional，与 Qwen3 一致）。
 /// 位置 = offset + 序列内偏移，对 batch 维广播——不随行号漂移。
@@ -188,7 +189,7 @@ public final class PinyinTextModel: Module {
     }
 }
 
-/// mlx-community/Qwen3-0.6B-4bit 权重装载（model.* 前缀 → 组件），
+/// mlx-community/Qwen3-{0.6B,1.7B}-4bit 权重装载（model.* 前缀 → 组件），
 /// 用 qwen3-asr-swift 公开的 CommonWeightLoader helper 逐 shard 应用。
 enum PinyinDecoderLoader {
     static func load(into model: PinyinTextModel, from directory: URL) throws {

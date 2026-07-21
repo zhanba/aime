@@ -49,7 +49,7 @@ struct PinyinSettingsTab: View {
             } header: {
                 Text("本地整句模型")
             } footer: {
-                Text("Qwen3-0.6B 在本地做整句转换（约 320MB，Apache 2.0），无需联网与 API Key，比云端快约 4 倍；失败自动回退云端。")
+                Text("Qwen3-1.7B 在本地做整句转换（约 950MB，Apache 2.0），无需联网与 API Key，比云端更快；失败自动回退云端。")
             }
 
             Section("输入") {

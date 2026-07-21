@@ -139,7 +139,10 @@ let package = Package(
         // 本地拼音 LLM 评测 CLI：swift run aime-llm --suite testdata/pinyin_testset_large.tsv
         .executableTarget(
             name: "aime-llm",
-            dependencies: ["AimePinyin", "AimeLocalLLM"],
+            dependencies: [
+                "AimePinyin", "AimeLocalLLM",
+                .product(name: "Qwen3ASR", package: "qwen3-asr-swift")
+            ],
             path: "Sources/aime-llm",
             swiftSettings: [
                 .swiftLanguageMode(.v5)

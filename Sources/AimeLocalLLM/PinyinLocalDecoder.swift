@@ -4,10 +4,12 @@ import MLX
 import MLXCommon
 import Qwen3ASR
 
-// 本地拼音 LLM（形态 A）：Qwen3-0.6B-4bit 拼音约束 beam 解码的可复用封装。
+// 本地拼音 LLM（形态 A）：Qwen3-1.7B-4bit 拼音约束 beam 解码的可复用封装。
 // daemon（XPC 服务）与 aime-llm（评测 CLI）共用，保证评测数字就是线上行为。
-// 默认超参经 holdout 验证：调参集 560 句 81.4%、开发集 238 句 67.2%、模糊噪声集 63.0%、
-// 盲测集 147 句 62.6% / p50 ~247ms（各集本地 Viterbi 基线 50.9%/41.2%/40.8%/31.3%）。
+// 模型由 0.6B 升到 1.7B（2026-07-21）：0.6B 把常用口语拆成人名/动补（kan xia→砍下、
+// mei dong→梅东），根因是容量不足——1.7B 无上下文即选对；频率 prior 已证伪（净回归，故仍归零）。
+// 1.7B 默认超参（prior=0/fuzzyPenalty=3/beam16）过 holdout：调参 83.9%、开发 68.1%、
+// 模糊 67.6%、盲测 66.0%（0.6B 同参 81.4/67.2/63.0/62.6）/ p50 ~500ms、p90 ~700ms。
 // prior 是调参集过拟合产物（holdout 上负收益）故归零；fuzzyPenalty 每 +1 约拿 1 分干净换 2 分
 // 模糊容错，3.0 是均衡点；beam 16→8 省 60ms 但模糊集掉 2.5pp。非线程安全——调用方负责串行。
 // 跨格子择优用整句 sum（2026-07-20 修正，原为逐字 avg，导致 xuanzhong→徐安忠 等常用整音节被
@@ -38,7 +40,8 @@ public final class PinyinLocalDecoder {
         let tokens: [String: String]
     }
 
-    public init(modelDir: URL, tokenTableURL: URL, lexicon: Lexicon) throws {
+    public init(modelDir: URL, tokenTableURL: URL, lexicon: Lexicon,
+                textConfig: TextDecoderConfig = .large) throws {
         let table = try JSONDecoder().decode(
             TokenTable.self, from: Data(contentsOf: tokenTableURL))
         var byFirst: [Character: [CJKToken]] = [:]
@@ -63,7 +66,7 @@ public final class PinyinLocalDecoder {
         }
         self.syllableChars = syllableChars
 
-        self.model = PinyinTextModel(config: .small)
+        self.model = PinyinTextModel(config: textConfig)
         try PinyinDecoderLoader.load(into: model, from: modelDir)
 
         // prompt（"句子："）KV 只算一次，所有请求复用
@@ -304,17 +307,17 @@ public final class PinyinLocalDecoder {
             .appendingPathComponent("aime", isDirectory: true)
     }
 
-    /// 模型目录：App Support/aime/models/Qwen3-0.6B-4bit 优先（未来下载分发的落点），
+    /// 模型目录：App Support/aime/models/Qwen3-1.7B-4bit 优先（下载分发的落点），
     /// 开发机回退 HF 缓存 snapshot。
     public static func defaultModelDir() -> URL? {
         let managed = appSupportDir
             .appendingPathComponent("models", isDirectory: true)
-            .appendingPathComponent("Qwen3-0.6B-4bit", isDirectory: true)
+            .appendingPathComponent("Qwen3-1.7B-4bit", isDirectory: true)
         if FileManager.default.fileExists(atPath: managed.appendingPathComponent("model.safetensors").path) {
             return managed
         }
         let hub = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub/models--mlx-community--Qwen3-0.6B-4bit/snapshots")
+            .appendingPathComponent(".cache/huggingface/hub/models--mlx-community--Qwen3-1.7B-4bit/snapshots")
         guard let snapshots = try? FileManager.default.contentsOfDirectory(
             at: hub, includingPropertiesForKeys: nil) else { return nil }
         return snapshots.first {

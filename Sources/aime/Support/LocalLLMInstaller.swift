@@ -1,9 +1,9 @@
 import AimeLocalLLM
 import Foundation
 
-/// 本地拼音 LLM 模型（Qwen3-0.6B-4bit，Apache 2.0）的下载安装（设置页 UI 的后端）。
-/// 只需 model.safetensors 一个文件（config 硬编码在 PinyinTextModel.small，
-/// tokenizer 由 bundle 内 cjk_tokens.json 替代），约 320MB，主源 HF、回退 hf-mirror。
+/// 本地拼音 LLM 模型（Qwen3-1.7B-4bit，Apache 2.0）的下载安装（设置页 UI 的后端）。
+/// 只需 model.safetensors 一个文件（config 硬编码在 PinyinTextModel.large，
+/// tokenizer 由 bundle 内 cjk_tokens.json 替代），约 950MB，主源 HF、回退 hf-mirror。
 @MainActor
 final class LocalLLMInstaller: ObservableObject {
     static let shared = LocalLLMInstaller()
@@ -18,15 +18,15 @@ final class LocalLLMInstaller: ObservableObject {
     @Published var installedInfo: String?
 
     private static let sources = [
-        "https://huggingface.co/mlx-community/Qwen3-0.6B-4bit/resolve/main/model.safetensors",
-        "https://hf-mirror.com/mlx-community/Qwen3-0.6B-4bit/resolve/main/model.safetensors",
+        "https://huggingface.co/mlx-community/Qwen3-1.7B-4bit/resolve/main/model.safetensors",
+        "https://hf-mirror.com/mlx-community/Qwen3-1.7B-4bit/resolve/main/model.safetensors",
     ]
 
     /// 受管落点（与 PinyinLocalDecoder.defaultModelDir 的优先路径一致）
     static var managedDir: URL {
         FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("aime/models/Qwen3-0.6B-4bit", isDirectory: true)
+            .appendingPathComponent("aime/models/Qwen3-1.7B-4bit", isDirectory: true)
     }
 
     init() {
@@ -42,7 +42,7 @@ final class LocalLLMInstaller: ObservableObject {
         let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         let sizeText = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
         let origin = dir.path.hasPrefix(Self.managedDir.path) ? "" : "（开发机 HF 缓存）"
-        installedInfo = "已安装 Qwen3-0.6B（\(sizeText)）\(origin)"
+        installedInfo = "已安装 Qwen3-1.7B（\(sizeText)）\(origin)"
     }
 
     func install() {
@@ -83,7 +83,7 @@ final class LocalLLMInstaller: ObservableObject {
         return false
     }
 
-    /// 逐源流式下载到 file，每 ~8MB 报一次进度（350MB 不能整块进内存）
+    /// 逐源流式下载到 file，每 ~8MB 报一次进度（~950MB 不能整块进内存）
     private static func fetch(to file: URL, onProgress: @escaping @Sendable (String) -> Void) async throws {
         var lastError: Error = URLError(.cannotLoadFromNetwork)
         for source in sources {
@@ -135,7 +135,7 @@ final class LocalLLMInstaller: ObservableObject {
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
         let head = try handle.read(upToCount: 8) ?? Data()
-        guard head.count == 8, size > 300_000_000 else {
+        guard head.count == 8, size > 800_000_000 else {
             throw NSError(domain: "aime", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "下载不完整（\(size) 字节），请重试",
             ])

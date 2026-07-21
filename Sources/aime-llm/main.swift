@@ -1,6 +1,7 @@
 import AimeLocalLLM
 import AimePinyin
 import Foundation
+import Qwen3ASR
 
 // 本地拼音 LLM 评测 CLI（形态 A）：解码逻辑在 AimeLocalLLM（与 daemon 共用），
 // 这里只做评测协议与延迟统计。
@@ -17,7 +18,8 @@ import Foundation
 //   pinyin_holdout_fuzzy.tsv (238) 模糊噪声集（holdout 同句注入六组模糊替换，测容错）
 //   pinyin_blind.tsv (147) 盲测集——只做最终验收，不得用于任何调参
 //   pinyin_context.tsv (36) 上下文消歧集（三列：拼音\t期望\t上下文；--ignore-context 做对照）
-// 当前默认参数：560 句 81.4% | 开发集 67.2% | 模糊 63.0% | 盲测 62.6% / p50 247ms
+// 当前默认 = Qwen3-1.7B-4bit（2026-07-21 由 0.6B 升级，--model-size small 走 0.6B 对照）：
+// 调参 83.9% | 开发 68.1% | 模糊 67.6% | 盲测 66.0% / p50 ~500ms（0.6B 同参 81.4/67.2/63.0/62.6，p50 247ms）
 // （跨格子择优用整句 sum 而非逐字 avg，根治常用整音节被拆成人名/错词，如 xuanzhong→徐安忠）
 // 上下文注入（2026-07-20）：消歧集 44.4% → 66.7%，无上下文路径零漂移，开销 ~6ms
 
@@ -30,6 +32,7 @@ var fuzzyPenalty = 3.0
 var limit: Int?
 var outPath: String?
 var probeMode = false
+var modelSize = "large"  // large=1.7B(.large config，线上默认) | small=0.6B(.small config，对照用)
 var convertRaw: String?  // 单句模式（可配 --context），手工验证用
 var contextText: String?
 var ignoreContext = false  // 三列 suite 忽略上下文列（对照组）
@@ -47,6 +50,7 @@ while !args.isEmpty {
     case "--limit": limit = Int(args.removeFirst())
     case "--out": outPath = args.removeFirst()
     case "--probe": probeMode = true
+    case "--model-size": modelSize = args.removeFirst()
     case "--convert": convertRaw = args.removeFirst()
     case "--context": contextText = args.removeFirst()
     case "--ignore-context": ignoreContext = true
@@ -75,8 +79,10 @@ guard let resolvedTokens else {
 }
 
 let began = Date()
+let textConfig: TextDecoderConfig = modelSize == "large" ? .large : .small
 let decoder = try PinyinLocalDecoder(
-    modelDir: resolvedModelDir, tokenTableURL: resolvedTokens, lexicon: lexicon)
+    modelDir: resolvedModelDir, tokenTableURL: resolvedTokens, lexicon: lexicon,
+    textConfig: textConfig)
 decoder.beamWidth = beamWidth
 decoder.priorWeight = priorW
 decoder.fuzzyPenalty = fuzzyPenalty
