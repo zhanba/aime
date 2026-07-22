@@ -20,6 +20,7 @@ public final class Qwen3ASRBackend: ASRBackend {
             onProgress?(progress < 1.0 ? "\(status) \(Int(progress * 100))%" : nil)
         }
         try await inference.loadVAD()
+        await inference.warmup()
     }
 
     public func makeSession() -> ASRSession {
@@ -32,12 +33,14 @@ actor Qwen3Inference {
     private var model: Qwen3ASRModel?
     private var loadedModelID: String?
     private var vad: SileroVADModel?
+    private var warmedUp = false
 
     func load(modelID: String, progressHandler: @escaping (Double, String) -> Void) async throws {
         if loadedModelID == modelID, model != nil { return }
         DiagLog.log("加载模型 \(modelID)")
         model = nil // 先释放旧模型再加载，避免两份权重同时驻留
         loadedModelID = nil
+        warmedUp = false
         let loaded = try await Qwen3ASRModel.fromPretrained(
             modelId: modelID,
             cacheDir: ModelStore.modelDir(for: modelID),
@@ -59,6 +62,22 @@ actor Qwen3Inference {
             cacheDir: ModelStore.modelDir(for: modelID),
             offlineMode: ModelStore.hasWeights(for: modelID)
         )
+    }
+
+    /// MLX 惰性加载：load 只是建图，首次真正推理才触发 Metal 内核编译与权重上载，
+    /// 可能耗时数秒。加载后用 0.3s 静音跑一次小推理预热，把这段成本移出首次录音会话。
+    func warmup() {
+        guard !warmedUp, let model else { return }
+        let began = Date()
+        _ = model.transcribe(
+            audio: [Float](repeating: 0, count: 4800),
+            sampleRate: 16000,
+            language: "zh",
+            maxTokens: 8,
+            context: nil
+        )
+        warmedUp = true
+        DiagLog.log(String(format: "模型预热完成 耗时%.0fms", Date().timeIntervalSince(began) * 1000))
     }
 
     func transcribe(samples: [Float], language: String?, context: String?) throws -> String {
@@ -148,6 +167,7 @@ public final class Qwen3ASRSession: ASRSession {
         prepareTask = Task { [inference] in
             try await inference.load(modelID: modelID) { _, _ in }
             try await inference.loadVAD()
+            await inference.warmup()
         }
         recorder.bluetoothMicStrategy = config.bluetoothMicStrategy ?? .quickRelease
         recorder.onBuffer = { [weak self] buffer in self?.feed(buffer) }
@@ -213,7 +233,7 @@ public final class Qwen3ASRSession: ASRSession {
             // 先等模型就绪：冷启动时 transcribe 会静默抛 transcriberNotReady，
             // 不等的话整段录音期间一个 partial 都出不来。
             if let prepare = self?.prepareTask { try? await prepare.value }
-            var interval: TimeInterval = 0.5
+            var interval: TimeInterval = 0.3
             var lastCount = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
@@ -230,6 +250,7 @@ public final class Qwen3ASRSession: ASRSession {
                 interval = max(0.6, cost * 1.5)
                 guard !Task.isCancelled, !self.cancelled else { return }
                 let cleaned = Self.sanitize(text, sampleCount: snapshot.count)
+                DiagLog.log(String(format: "预览：样本=%d 耗时%.0fms 文本%d字", snapshot.count, cost * 1000, cleaned.count))
                 if !cleaned.isEmpty {
                     await MainActor.run { self.onUpdate?(cleaned) }
                 }
