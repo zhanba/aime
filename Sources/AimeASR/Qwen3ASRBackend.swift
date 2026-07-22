@@ -205,25 +205,29 @@ public final class Qwen3ASRSession: ASRSession {
 
     // MARK: - 实时预览
 
-    /// 录音期间周期性转写已累积音频。节奏自适应：上一次局部转写耗时越长，间隔越大，
+    /// 录音期间周期性转写已累积音频。首轮尽快出字（短语音也能看到流式预览）；
+    /// 之后节奏自适应：上一次局部转写耗时越长，间隔越大，
     /// 保证 finish 的定稿转写最多排在一次局部转写之后。
     private func startPartialLoop() {
         partialTask = Task { [weak self] in
-            var interval: TimeInterval = 1.5
+            // 先等模型就绪：冷启动时 transcribe 会静默抛 transcriberNotReady，
+            // 不等的话整段录音期间一个 partial 都出不来。
+            if let prepare = self?.prepareTask { try? await prepare.value }
+            var interval: TimeInterval = 0.5
             var lastCount = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 guard let self, !Task.isCancelled, !self.cancelled else { return }
                 let snapshot = self.snapshotSamples()
-                // 新增不足 0.5s 就跳过这一轮
-                guard snapshot.count >= Self.minSampleCount, snapshot.count - lastCount > 8000 else { continue }
+                // 新增不足 0.25s 就跳过这一轮
+                guard snapshot.count >= Self.minSampleCount, snapshot.count - lastCount > 4000 else { continue }
                 lastCount = snapshot.count
                 let began = Date()
                 guard let text = try? await self.inference.transcribe(
                     samples: snapshot, language: self.language, context: self.contextHint
                 ) else { continue }
                 let cost = Date().timeIntervalSince(began)
-                interval = max(1.5, cost * 1.5)
+                interval = max(0.6, cost * 1.5)
                 guard !Task.isCancelled, !self.cancelled else { return }
                 let cleaned = Self.sanitize(text, sampleCount: snapshot.count)
                 if !cleaned.isEmpty {
