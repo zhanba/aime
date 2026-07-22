@@ -288,6 +288,10 @@ public final class PinyinEngine {
         /// 句级备选：beam 次优路径整句（首选不对时一键换句）。
         /// 仅单拼音段时提供（多段组合爆炸）；gram 未装时来自边界变体。
         public var localAlternatives: [String] = []
+        /// beam n-best 整句（含首选，按分排序）。LLM 候选置顶仲裁用：
+        /// 真词纠错通常在 beam 内，单字碎片（丁不）被 λ+单字罚压出局。
+        /// 仅单拼音段时提供。
+        public var localNBest: [String] = []
     }
 
     public func analyze(_ raw: String, fuzzyRuleIDs: Set<String> = FuzzyRule.defaultEnabled) -> Result {
@@ -303,6 +307,7 @@ public final class PinyinEngine {
         var pinyinSegmentCount = 0
         var pinyinPartIndex = 0
         var pinyinPartOptions: [String] = []
+        var pinyinPartNBest: [String] = []
         for segment in segments {
             switch segment.kind {
             case .literal(let text):
@@ -311,9 +316,9 @@ public final class PinyinEngine {
                 pinyinSegmentCount += 1
                 let variants = PinyinSegmenter.boundaryVariants(of: syllables, enabledFuzzyRuleIDs: fuzzyRuleIDs)
                 alternatives += variants.map { $0.map(\.text).joined(separator: " ") }
-                var merged = composer.composeNBest(syllables: syllables, limit: 3)
+                var merged = composer.composeNBest(syllables: syllables, limit: 8)
                 for variant in variants {
-                    merged += composer.composeNBest(syllables: variant, limit: 3)
+                    merged += composer.composeNBest(syllables: variant, limit: 8)
                 }
                 merged.sort { $0.score > $1.score }
                 var seen = Set<String>()
@@ -321,14 +326,18 @@ public final class PinyinEngine {
                 parts.append(ranked.first?.sentence ?? "")
                 pinyinPartIndex = parts.count - 1
                 pinyinPartOptions = ranked.dropFirst().prefix(2).map(\.sentence)
+                pinyinPartNBest = ranked.map(\.sentence)
             }
         }
         let sentence = parts.joined()
         var localAlternatives: [String] = []
+        var localNBest: [String] = []
         if pinyinSegmentCount == 1 {
-            localAlternatives = pinyinPartOptions.map { option in
+            func substitute(_ option: String) -> String {
                 parts.enumerated().map { $0.offset == pinyinPartIndex ? option : $0.element }.joined()
             }
+            localAlternatives = pinyinPartOptions.map(substitute)
+            localNBest = pinyinPartNBest.map(substitute)
         }
 
         // 简拼：整串是 2–8 个小写字母时试缩写索引（"nh"→你好）。
@@ -403,7 +412,8 @@ public final class PinyinEngine {
             localSentence: sentence.isEmpty ? nil : sentence,
             wordCandidates: candidates,
             boundaryAlternatives: alternatives,
-            localAlternatives: localAlternatives
+            localAlternatives: localAlternatives,
+            localNBest: localNBest
         )
     }
 

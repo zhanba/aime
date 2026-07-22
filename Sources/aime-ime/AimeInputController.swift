@@ -52,6 +52,9 @@ class AimeInputController: IMKInputController {
     private var engineResult: PinyinEngine.Result?
     private var llmConversion: PinyinConversion?
     private var llmVerdict: PinyinVerifier.Verdict = .pass
+    /// 本地 LLM 置顶仲裁降级：true 时 AI 候选后置且不作组合区预览（句首选顶上）。
+    /// 与 .demote 分开存：语音消歧路径的 .demote 仍要占用预览（声调信息更足）。
+    private var llmTopDemoted = false
     private var convertedFor = ""
     private var debounceTask: Task<Void, Never>?
 
@@ -460,6 +463,7 @@ class AimeInputController: IMKInputController {
                 llmConversion = PinyinConversion(best: trimmed, alternative: llmConversion?.best)
                 convertedFor = rawBuffer
                 llmVerdict = verdict
+                llmTopDemoted = false
                 rebuildCandidates()
                 updateMarkedText()
                 // 成功反馈就是组合区文本本身，浮层安静收起；只有异常才停留提示
@@ -677,7 +681,7 @@ class AimeInputController: IMKInputController {
     }
 
     private var currentPreview: String {
-        if llmFresh, llmVerdict != .reject, let best = llmConversion?.best {
+        if llmFresh, llmVerdict != .reject, !llmTopDemoted, let best = llmConversion?.best {
             return best
         }
         return engineResult?.localSentence ?? rawBuffer
@@ -688,6 +692,7 @@ class AimeInputController: IMKInputController {
         engineResult = nil
         llmConversion = nil
         convertedFor = ""
+        llmTopDemoted = false
         debounceTask?.cancel()
     }
 
@@ -1054,6 +1059,21 @@ class AimeInputController: IMKInputController {
         }
     }
 
+    /// 本地 LLM 置顶仲裁（评测 2026-07-22）：无上下文的短输入（≤3 音节）缺消歧
+    /// 信息，裸 LM 概率偏向高频字组合（dingbu→丁不 压过 顶部），结果不在句引擎
+    /// beam 前 2 名就后置——短词集零错杀且救回全部人名拆分错例。长句或有上下文
+    /// 不设门禁：LLM 整句收益大量来自 beam 之外（全集门禁 84.1%→63.6%，不可行）。
+    private func shouldDemoteLocalTop(_ sentence: String, context: String) -> Bool {
+        guard context.isEmpty, let engineResult else { return false }
+        let syllableCount = engineResult.segments.reduce(0) { sum, segment in
+            if case .pinyin(let syllables) = segment.kind { return sum + syllables.count }
+            return sum
+        }
+        guard (1 ... 3).contains(syllableCount) else { return false }
+        let top2 = engineResult.localNBest.prefix(2)
+        return !top2.isEmpty && !top2.contains(sentence)
+    }
+
     @MainActor
     private func convertNow(_ snapshot: String) async {
         guard snapshot == rawBuffer, !snapshot.isEmpty, !voiceRecording else { return }
@@ -1070,7 +1090,9 @@ class AimeInputController: IMKInputController {
                 guard snapshot == rawBuffer, !voiceRecording else { return }
                 llmConversion = PinyinConversion(best: sentence)
                 convertedFor = snapshot
-                llmVerdict = .pass  // 约束解码逐字来自拼音格子，结构上免回验
+                // 约束解码逐字来自拼音格子，读音免回验；但短输入无上下文时置顶要过仲裁
+                llmTopDemoted = shouldDemoteLocalTop(sentence, context: localContext)
+                llmVerdict = llmTopDemoted ? .demote : .pass
                 guard translationPhase == .none else { return }
                 guard page == 0, highlighted == 0 else { return }
                 rebuildCandidates()
@@ -1099,6 +1121,7 @@ class AimeInputController: IMKInputController {
             llmVerdict = PinyinVerifier.verify(
                 candidate: result.best, segments: engineResult?.segments ?? []
             )
+            llmTopDemoted = false
             // 翻译态中只存结果不动 UI（避免打断译文候选浏览），退出翻译态时自然生效
             guard translationPhase == .none else { return }
             // 用户已在候选栏翻页/移动高亮：不得重排——编号→词的映射在眼前变化

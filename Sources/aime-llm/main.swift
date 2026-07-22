@@ -136,17 +136,47 @@ var hit = 0
 var fallback = 0
 var latencies: [Double] = []
 var outLines: [String] = []
+// 置顶仲裁评测：无上下文 且 音节数 ≤ maxN 的短输入，LLM 结果不在句引擎
+// beam 前 2 名则回退 Viterbi 首选（全集数据表明不加长度条件会错杀 LLM 的
+// 整句收益：84.1%→63.6%；短词集上前 2 名门禁零成本）。按 maxN 分别统计选参。
+let arbitrateNs = [2, 3, 4]
+var hitViterbi = 0
+var hitArbitrated = [Int: Int](uniqueKeysWithValues: arbitrateNs.map { ($0, 0) })
+var demoted = [Int: Int](uniqueKeysWithValues: arbitrateNs.map { ($0, 0) })
+var demotedGain = [Int: Int](uniqueKeysWithValues: arbitrateNs.map { ($0, 0) })  // 降级救对
+var demotedLoss = [Int: Int](uniqueKeysWithValues: arbitrateNs.map { ($0, 0) })  // 降级错杀
 for (index, testCase) in cases.enumerated() {
     let start = Date()
     var bestText = decoder.convert(
         raw: testCase.pinyin, fuzzyRuleIDs: fuzzyRuleIDs, context: testCase.context)?.sentence
     latencies.append(Date().timeIntervalSince(start))
+    let analysis = engine.analyze(testCase.pinyin, fuzzyRuleIDs: fuzzyRuleIDs)
     if bestText == nil {
         fallback += 1
-        bestText = engine.analyze(testCase.pinyin, fuzzyRuleIDs: fuzzyRuleIDs).localSentence
+        bestText = analysis.localSentence
     }
-    if let bestText, normalize(bestText) == normalize(testCase.expected) {
-        hit += 1
+    let expected = normalize(testCase.expected)
+    let llmRight = bestText.map { normalize($0) == expected } ?? false
+    if llmRight { hit += 1 }
+    let viterbiRight = analysis.localSentence.map { normalize($0) == expected } ?? false
+    if viterbiRight { hitViterbi += 1 }
+    let syllableCount = analysis.segments.reduce(0) { sum, segment in
+        if case .pinyin(let syllables) = segment.kind { return sum + syllables.count }
+        return sum
+    }
+    let top2 = Set(analysis.localNBest.prefix(2).map(normalize))
+    for maxN in arbitrateNs {
+        let shortNoContext = testCase.context == nil && syllableCount <= maxN
+        let gated = shortNoContext && !top2.isEmpty
+            && !(bestText.map { top2.contains(normalize($0)) } ?? true)
+        if gated {
+            demoted[maxN]! += 1
+            if viterbiRight { hitArbitrated[maxN]! += 1 }
+            if viterbiRight, !llmRight { demotedGain[maxN]! += 1 }
+            if llmRight, !viterbiRight { demotedLoss[maxN]! += 1 }
+        } else {
+            if llmRight { hitArbitrated[maxN]! += 1 }
+        }
     }
     outLines.append("\(testCase.pinyin)\t\(testCase.expected)\t\(bestText ?? "-")")
     if (index + 1) % 100 == 0 {
@@ -160,6 +190,10 @@ if let outPath {
 latencies.sort()
 let total = cases.count
 print("Swift 约束beam\(beamWidth) prior=\(priorW) fuzzyPenalty=\(fuzzyPenalty): \(hit)/\(total) = \(String(format: "%.1f%%", Double(hit) / Double(total) * 100))  死路兜底 \(fallback)")
+print("Viterbi 对照: \(hitViterbi)/\(total) = \(String(format: "%.1f%%", Double(hitViterbi) / Double(total) * 100))")
+for maxN in arbitrateNs {
+    print("仲裁 maxN=\(maxN): \(hitArbitrated[maxN]!)/\(total) = \(String(format: "%.1f%%", Double(hitArbitrated[maxN]!) / Double(total) * 100))  降级 \(demoted[maxN]!)（救对 \(demotedGain[maxN]!) 错杀 \(demotedLoss[maxN]!)）")
+}
 if !latencies.isEmpty {
     print(String(
         format: "延迟: p50=%.0fms p90=%.0fms",
