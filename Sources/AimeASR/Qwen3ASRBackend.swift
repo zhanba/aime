@@ -33,14 +33,12 @@ actor Qwen3Inference {
     private var model: Qwen3ASRModel?
     private var loadedModelID: String?
     private var vad: SileroVADModel?
-    private var warmedUp = false
 
     func load(modelID: String, progressHandler: @escaping (Double, String) -> Void) async throws {
         if loadedModelID == modelID, model != nil { return }
         DiagLog.log("加载模型 \(modelID)")
         model = nil // 先释放旧模型再加载，避免两份权重同时驻留
         loadedModelID = nil
-        warmedUp = false
         let loaded = try await Qwen3ASRModel.fromPretrained(
             modelId: modelID,
             cacheDir: ModelStore.modelDir(for: modelID),
@@ -64,10 +62,12 @@ actor Qwen3Inference {
         )
     }
 
-    /// MLX 惰性加载：load 只是建图，首次真正推理才触发 Metal 内核编译与权重上载，
-    /// 可能耗时数秒。加载后用 0.3s 静音跑一次小推理预热，把这段成本移出首次录音会话。
+    /// 预热：用 0.3s 静音跑一次小推理。MLX 惰性加载下首次真正推理才触发 Metal
+    /// 内核编译与权重上载（可达秒级），且闲置几分钟后 GPU 驻留会被系统回收、
+    /// 再推理又慢一拍。因此除加载后调用外，每次录音开始也轻触一次：热态只花
+    /// ~100–200ms，正好藏进首轮 partial 的等待窗口，保证首字不吃冷启动成本。
     func warmup() {
-        guard !warmedUp, let model else { return }
+        guard let model else { return }
         let began = Date()
         _ = model.transcribe(
             audio: [Float](repeating: 0, count: 4800),
@@ -76,7 +76,6 @@ actor Qwen3Inference {
             maxTokens: 8,
             context: nil
         )
-        warmedUp = true
         DiagLog.log(String(format: "模型预热完成 耗时%.0fms", Date().timeIntervalSince(began) * 1000))
     }
 
@@ -192,13 +191,14 @@ public final class Qwen3ASRSession: ASRSession {
         let began = Date()
         recorder.stop()
         partialTask?.cancel()
-        if let prepareTask {
-            try await prepareTask.value
-        }
         let snapshot = snapshotSamples()
+        // 样本不足直接返回，不 await 模型（误触时不被预热/加载拖慢）
         guard snapshot.count >= Self.minSampleCount else {
             DiagLog.log("定稿：样本不足 \(snapshot.count)，返回空")
             return ASRResult(text: "", segments: nil)
+        }
+        if let prepareTask {
+            try await prepareTask.value
         }
         // W3：VAD 前置——掐首尾静音，纯静音直接返回空（不喂给 LLM ASR，杜绝幻觉）
         guard let trimmed = await inference.vadTrim(samples: snapshot),
