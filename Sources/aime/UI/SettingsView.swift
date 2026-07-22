@@ -116,8 +116,8 @@ private struct VoiceSettingsTab: View {
                 } footer: {
                     Text(
                         micStrategy.wrappedValue == .quickRelease
-                            ? "耳机麦启动约 1 秒；内置麦克风即按即录。听不到耳机自带的启动提示音时，开启始终播放。"
-                            : "耳机麦启动约 1 秒；内置麦克风即按即录。"
+                            ? "耳机麦启动约 1 秒；内置麦即按即录。听不到启动提示音时开启始终播放。"
+                            : "耳机麦启动约 1 秒；内置麦即按即录。"
                     )
                 }
             }
@@ -282,7 +282,7 @@ private struct AIServiceTab: View {
                         KeychainStore.saveAPIKey(newValue)
                     }
             } footer: {
-                Text("留空即纯本地运行；只发送文本，永不发送音频。Key 存放在系统钥匙串。")
+                Text("留空即纯本地。只发送文本；Key 存于钥匙串。")
             }
             Section {
                 Picker("功能", selection: $promptTarget) {
@@ -319,8 +319,8 @@ private struct AIServiceTab: View {
             } footer: {
                 Text(
                     promptTarget == .refine
-                        ? "直接编辑即成为「自定义」；切回任一风格时自定义内容保留，可随时切换。光标前文等上下文始终自动附加。"
-                        : "可直接修改。光标前文、用户词库等上下文仍会自动附加。"
+                        ? "编辑即成「自定义」，切回风格时内容保留。上下文自动附加。"
+                        : "上下文自动附加。"
                 )
             }
         }

@@ -1,45 +1,57 @@
 import AimePinyin
 import SwiftUI
 
-/// 用户词库管理（拼音页内嵌 Sections）。词条来自拼音/语音上屏学习，双向增强两个模态。
+/// 用户词库管理（拼音页内嵌 Section）。词条来自拼音/语音上屏学习，双向增强两个模态。
+/// 词条列表默认收起，页面只留添加入口一行。
 struct DictionarySections: View {
     @State private var entries: [UserDictionary.Entry] = []
     @State private var newWord = ""
+    @State private var listExpanded = false
 
     var body: some View {
         Section {
             HStack {
-                TextField("手动添加词（专有名词、项目名…）", text: $newWord)
+                TextField("添加词", text: $newWord)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { addWord() }
                 Button("添加") { addWord() }
                     .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            if !entries.isEmpty {
+                DisclosureGroup(isExpanded: $listExpanded) {
+                    entryList
+                } label: {
+                    HStack {
+                        Text("已学词")
+                        Spacer()
+                        Text("\(entries.count) 个")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         } header: {
-            Text("词典 · 已学到 \(entries.count) 个词")
+            Text("词典")
         } footer: {
-            Text("由上屏内容自动学习，拼音与语音共享，久不用的词自动淡出。")
+            Text("上屏自动学习，久不用自动淡出。")
         }
         .onAppear { reload() }
+    }
 
-        if !entries.isEmpty {
-            Section {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(entries) { entry in
-                            entryRow(entry)
-                                .padding(.vertical, 4)
-                            if entry.id != entries.last?.id {
-                                Divider()
-                            }
-                        }
+    private var entryList: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(entries) { entry in
+                    entryRow(entry)
+                        .padding(.vertical, 4)
+                    if entry.id != entries.last?.id {
+                        Divider()
                     }
-                    // 给悬浮滚动条让位，避免盖住行尾的删除按钮
-                    .padding(.trailing, 16)
                 }
-                .frame(height: 200)
             }
+            // 给悬浮滚动条让位，避免盖住行尾的删除按钮
+            .padding(.trailing, 16)
         }
+        .frame(height: 200)
     }
 
     private func entryRow(_ entry: UserDictionary.Entry) -> some View {
