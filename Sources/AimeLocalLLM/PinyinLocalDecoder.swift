@@ -86,7 +86,7 @@ public final class PinyinLocalDecoder {
         eval(self.promptLogits)
 
         // 中性前缀「嗯」的 KV 同样只算一次（短输入无上下文时用，见 neutralPrefixMaxSyllables）
-        let neutralIds = Self.encodeContext("嗯", byFirst: byFirst)
+        let neutralIds = Self.encodeContext("嗯", byFirst: byFirst).map(\.id)
         if neutralIds.isEmpty {
             self.neutralCache = promptCache
             self.neutralLogits = self.promptLogits
@@ -112,9 +112,9 @@ public final class PinyinLocalDecoder {
 
     /// 无 BPE tokenizer，用 CJK 词元表贪心最长匹配编码；表外字符（英文/标点/数字）跳过。
     /// 上下文只影响先验不进输出，丢字符可接受。
-    static func encodeContext(_ text: String, byFirst: [Character: [CJKToken]]) -> [Int32] {
+    static func encodeContext(_ text: String, byFirst: [Character: [CJKToken]]) -> [CJKToken] {
         let chars = Array(text.suffix(maxContextChars))
-        var ids: [Int32] = []
+        var tokens: [CJKToken] = []
         var i = 0
         while i < chars.count {
             var best: CJKToken?
@@ -126,13 +126,13 @@ public final class PinyinLocalDecoder {
                 }
             }
             if let best {
-                ids.append(best.id)
+                tokens.append(best)
                 i += best.chars.count
             } else {
                 i += 1
             }
         }
-        return ids
+        return tokens
     }
 
     /// 上下文 prefill：接在固定 prompt 的 KV 后（batch=1、带 offset，vendored RoPE/mask 已支持）。
@@ -210,20 +210,28 @@ public final class PinyinLocalDecoder {
         let lattices = Self.lattices(for: raw, fuzzyRuleIDs: fuzzyRuleIDs)
         guard let primary = lattices.first else { return nil }
         // 上下文可能全是 ASCII（英文/数字前文），编码后为空——等同无上下文，走中性前缀判断
-        let contextIds = context.map { Self.encodeContext($0, byFirst: byFirst) } ?? []
+        let contextTokens = context.map { Self.encodeContext($0, byFirst: byFirst) } ?? []
+        // Token healing：末词元退回解码格子作固定前缀。BPE 合并词元会抽空跨界单字的
+        // 概率——「提交」是整词元，语料里「提」词元后几乎不单跟「交」词元，上下文
+        // 「…提」+ jiao 解成「脚」。退回「提」让「提交」参与打分即按正确分词计概率。
+        let healedChars = contextTokens.last?.chars ?? []
         let start: (cache: [(MLXArray, MLXArray)], logits: MLXArray)
-        if !contextIds.isEmpty {
-            start = contextState(ids: contextIds)
+        if !contextTokens.isEmpty {
+            let prefixIds = contextTokens.dropLast().map(\.id)
+            start = prefixIds.isEmpty ? (promptCache, promptLogits) : contextState(ids: prefixIds)
         } else if primary.count <= neutralPrefixMaxSyllables {
             start = (neutralCache, neutralLogits)
         } else {
             start = (promptCache, promptLogits)
         }
+        let healedMaps: [[Character: (prior: Double, penalty: Double)]] =
+            healedChars.map { [$0: (prior: 0.0, penalty: 0.0)] }
         var best: (sentence: String, avgScore: Double)?
         var bestTotal = -Double.infinity
         for lattice in lattices {
             guard let maps = buildCharMaps(lattice) else { continue }
-            if let result = decode(charMaps: maps, start: start) {
+            if let result = decode(
+                charMaps: healedMaps + maps, healedCount: healedChars.count, start: start) {
                 if dumpLatticesFlag {
                     FileHandle.standardError.write(Data(
                         "  格子[\(maps.count)音]→\(result.sentence)  sum=\(String(format: "%.3f", result.total)) avg=\(String(format: "%.3f", result.avgScore))\n".utf8))
@@ -237,8 +245,10 @@ public final class PinyinLocalDecoder {
         return best
     }
 
+    /// healedCount = charMaps 头部属于上下文末词元的固定位数：进打分、不进输出。
     func decode(
         charMaps: [[Character: (prior: Double, penalty: Double)]],
+        healedCount: Int = 0,
         start: (cache: [(MLXArray, MLXArray)], logits: MLXArray)
     ) -> (sentence: String, avgScore: Double, total: Double)? {
         let n = charMaps.count
@@ -326,7 +336,9 @@ public final class PinyinLocalDecoder {
         }
 
         guard let best = finished.max(by: { $0.score < $1.score }) else { return nil }
-        return (best.text, best.score / Double(n), best.score)
+        let outputCount = n - healedCount
+        return (String(best.text.dropFirst(healedCount)),
+                best.score / Double(max(outputCount, 1)), best.score)
     }
 
     // MARK: - 默认资源路径
