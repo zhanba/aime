@@ -17,6 +17,7 @@ var lambdaOverride: Double?
 var dampOverride: Double?
 var gramPath: String?
 var gramWeightOverride: Double?
+var contextGramWeightOverride: Double?
 var beamOverride: Int?
 var predictMode = false
 var nBest: Int?
@@ -35,6 +36,7 @@ while !args.isEmpty {
     case "--gram": gramPath = args.removeFirst()
     case "--predict": predictMode = true
     case "--gram-weight": gramWeightOverride = Double(args.removeFirst())
+    case "--context-gram-weight": contextGramWeightOverride = Double(args.removeFirst())
     case "--beam": beamOverride = Int(args.removeFirst())
     case "--nbest": nBest = Int(args.removeFirst())
     case "--dump-chars": dumpChars = true
@@ -57,6 +59,7 @@ let engine = gramPath.map { PinyinEngine(gramURL: URL(fileURLWithPath: $0)) } ??
 if let lambdaOverride { engine.lambda = lambdaOverride }
 if let dampOverride { engine.singleCharDamp = dampOverride }
 if let gramWeightOverride { engine.gramWeight = gramWeightOverride }
+if let contextGramWeightOverride { engine.contextGramWeight = contextGramWeightOverride }
 if let beamOverride { engine.beamWidth = beamOverride }
 if engine.lexicon == nil {
     FileHandle.standardError.write(Data("提示: 词库未安装（--build-lexicon 编译），本地整句/词候选不可用\n".utf8))
@@ -103,11 +106,12 @@ if dumpChars {
 
 if let suitePath {
     let tsv = try String(contentsOf: URL(fileURLWithPath: suitePath), encoding: .utf8)
-    var cases: [(pinyin: String, expected: String)] = []
+    // 两列 = 拼音\t期望；三列 = 拼音\t期望\t上下文（如 pinyin_context.tsv，上下文进本地引擎）
+    var cases: [(pinyin: String, expected: String, context: String)] = []
     for line in tsv.split(separator: "\n") {
-        let parts = line.split(separator: "\t", maxSplits: 1)
-        guard parts.count == 2 else { continue }
-        cases.append((String(parts[0]), String(parts[1])))
+        let parts = line.split(separator: "\t")
+        guard parts.count >= 2 else { continue }
+        cases.append((String(parts[0]), String(parts[1]), parts.count >= 3 ? String(parts[2]) : ""))
     }
     // n-best 导出模式（JSONL，重排/约束解码实验的输入）：
     // {"pinyin","expected","candidates":[{"text","score"}],"lattices":[[[音节假设]]]}
@@ -186,7 +190,9 @@ if let suitePath {
     }
     for (index, testCase) in cases.enumerated() {
         // 本地整句命中（词库层底线质量）
-        let local: String? = engine.analyze(testCase.pinyin, fuzzyRuleIDs: config.enabledFuzzyRuleIDs).localSentence
+        let local: String? = engine.analyze(
+            testCase.pinyin, fuzzyRuleIDs: config.enabledFuzzyRuleIDs, context: testCase.context
+        ).localSentence
         let localHit = local.map { normalize($0) == normalize(testCase.expected) } ?? false
         if localHit { localCorrect += 1 }
         charTotal += normalize(testCase.expected).count
@@ -243,7 +249,7 @@ if let suitePath {
 } else if !inputs.isEmpty {
     if !noLLM { config = SharedConfig.loadLLMConfig() }  // 单条调试要走 LLM，取 Key
     for raw in inputs {
-        let result = engine.analyze(raw, fuzzyRuleIDs: config.enabledFuzzyRuleIDs)
+        let result = engine.analyze(raw, fuzzyRuleIDs: config.enabledFuzzyRuleIDs, context: context ?? "")
         let segments = result.segments
         print("输入: \(raw)")
         print("切分: \(PinyinPromptBuilder.describe(segments: segments))")

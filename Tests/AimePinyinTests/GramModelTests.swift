@@ -102,4 +102,52 @@ final class GramModelTests: XCTestCase {
         let boosted = SentenceComposer(lexicon: lexicon, gram: gram, gramWeight: 1.0)
         XCTAssertEqual(boosted.compose(syllables: syllables), "一只小狗")
     }
+
+    /// 已上屏上下文种子：前文「养了」让 yizhi 从高频"一直"翻成量词"一只"
+    /// （"养了一只" 搭配经 beam 初始尾部命中）；空上下文行为与旧版一致。
+    func testContextSeedFlipsFirstWord() throws {
+        let dir = gramURL.deletingLastPathComponent()
+        let dict = dir.appendingPathComponent("mini2.dict.yaml")
+        try """
+        ...
+        一直\tyi zhi\t500000
+        一只\tyi zhi\t20000
+        一\tyi\t900000
+        只\tzhi\t100000
+        直\tzhi\t80000
+        """.write(to: dict, atomically: true, encoding: .utf8)
+        let lexiconURL = dir.appendingPathComponent("lexicon2.bin")
+        try Lexicon.compile(rimeDicts: [dict], to: lexiconURL)
+        let lexicon = try XCTUnwrap(Lexicon(url: lexiconURL))
+        let gram = try XCTUnwrap(GramModel(url: gramURL))
+        let composer = SentenceComposer(lexicon: lexicon, gram: gram)
+
+        let segments = PinyinSegmenter.segment("yizhi")
+        guard case .pinyin(let syllables) = segments[0].kind else { return XCTFail() }
+        XCTAssertEqual(composer.compose(syllables: syllables), "一直")
+        XCTAssertEqual(composer.compose(syllables: syllables, context: "养了"), "一只")
+    }
+
+    /// 引擎层：上下文经 analyze 贯通整句与词候选排序；trailingHan 过滤非汉字前文。
+    func testEngineContextBoostsCandidates() throws {
+        let dir = gramURL.deletingLastPathComponent()
+        let dict = dir.appendingPathComponent("mini3.dict.yaml")
+        try """
+        ...
+        直\tzhi\t500000
+        只\tzhi\t100000
+        """.write(to: dict, atomically: true, encoding: .utf8)
+        let lexiconURL = dir.appendingPathComponent("lexicon3.bin")
+        try Lexicon.compile(rimeDicts: [dict], to: lexiconURL)
+        let engine = PinyinEngine(lexiconURL: lexiconURL, gramURL: gramURL)
+
+        XCTAssertEqual(engine.analyze("zhi").wordCandidates.first?.word, "直")
+        let seeded = engine.analyze("zhi", context: "养了一")
+        XCTAssertEqual(seeded.localSentence, "只", "上下文搭配应翻盘整句首选")
+        XCTAssertEqual(seeded.wordCandidates.first?.word, "只", "词候选排序应吃到同一加成")
+        // 标点断开：末段无汉字 → 无种子，行为与无上下文一致
+        XCTAssertEqual(engine.analyze("zhi", context: "养了一，").wordCandidates.first?.word, "直")
+        XCTAssertEqual(PinyinEngine.trailingHan("说：提交"), "提交")
+        XCTAssertEqual(PinyinEngine.trailingHan("hello，"), "")
+    }
 }

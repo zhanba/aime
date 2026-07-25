@@ -150,7 +150,8 @@ for (index, testCase) in cases.enumerated() {
     var bestText = decoder.convert(
         raw: testCase.pinyin, fuzzyRuleIDs: fuzzyRuleIDs, context: testCase.context)?.sentence
     latencies.append(Date().timeIntervalSince(start))
-    let analysis = engine.analyze(testCase.pinyin, fuzzyRuleIDs: fuzzyRuleIDs)
+    let analysis = engine.analyze(
+        testCase.pinyin, fuzzyRuleIDs: fuzzyRuleIDs, context: testCase.context ?? "")
     if bestText == nil {
         fallback += 1
         bestText = analysis.localSentence

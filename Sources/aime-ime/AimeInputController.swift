@@ -698,6 +698,7 @@ class AimeInputController: IMKInputController {
 
     private func resetAll() {
         confirmedStack = []
+        screenContextCache = nil
         clearActiveBuffer()
         clearTranslation()
         predicting = false
@@ -814,7 +815,8 @@ class AimeInputController: IMKInputController {
             return
         }
         let config = SharedConfig.loadLLMConfig()
-        engineResult = PinyinEngine.shared.analyze(rawBuffer, fuzzyRuleIDs: config.enabledFuzzyRuleIDs)
+        engineResult = PinyinEngine.shared.analyze(
+            rawBuffer, fuzzyRuleIDs: config.enabledFuzzyRuleIDs, context: localEngineContext())
         if convertedFor != rawBuffer {
             llmConversion = nil
         }
@@ -1168,6 +1170,22 @@ class AimeInputController: IMKInputController {
         var before = contextBeforeCursor() ?? ""
         if before.isEmpty { before = recentCommitted }
         return before + confirmedText
+    }
+
+    /// 本地引擎的光标前文：与 typingContext 同源，但读屏 IPC 不能进逐键路径
+    /// （refresh 每键都跑），每次组合只读一次并缓存；组合期间光标不动，缓存不会失真。
+    /// 组合结束（resetAll）失效。屏蔽应用同样只留已确认段——gram 查询纯本地，
+    /// 但缓存可能含该应用内的敏感前文，与 LLM 路径同一口径最省心。
+    private var screenContextCache: String?
+
+    private func localEngineContext() -> String {
+        guard !clientBlocked else { return confirmedText }
+        if screenContextCache == nil {
+            var before = contextBeforeCursor() ?? ""
+            if before.isEmpty { before = recentCommitted }
+            screenContextCache = before
+        }
+        return (screenContextCache ?? "") + confirmedText
     }
 
     private func contextBeforeCursor() -> String? {

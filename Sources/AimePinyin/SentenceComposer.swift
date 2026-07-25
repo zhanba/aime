@@ -25,6 +25,11 @@ public struct SentenceComposer {
     public var gram: GramModel?
     /// 语法转移分权重（评测扫参）
     public var gramWeight: Double
+    /// 已上屏上下文种子转移（beam 位置 0）的独立权重：句内 0.3 是与 λ 联调的结果不适用，
+    /// 种子转移每条路径恰好一次、nonCollocation 基线常数排序可消，量纲与 log 词频同源。
+    /// 40 例短输入+上下文微集扫参：0→1.5 单调升（45%→60%），1.5 后平台（LMDG 缺
+    /// 睡觉/吃饭 类词内串，数据天花板）→ 取 1.5。
+    public var contextGramWeight: Double
     /// 每词固定惩罚：偏向长词。评测调参（docs/algorithm.md §4.3）。
     public var lambda: Double
     /// 单字额外惩罚：抑制"高频单字串"打败整词（8105 字频与词频量纲不同）。
@@ -37,13 +42,14 @@ public struct SentenceComposer {
 
     public init(
         lexicon: Lexicon, gram: GramModel? = nil, gramWeight: Double = 0.3,
-        lambda: Double = 16.0, singleCharDamp: Double = 3.0
+        lambda: Double = 16.0, singleCharDamp: Double = 3.0, contextGramWeight: Double = 1.5
     ) {
         self.lexicon = lexicon
         self.gram = gram
         self.gramWeight = gramWeight
         self.lambda = lambda
         self.singleCharDamp = singleCharDamp
+        self.contextGramWeight = contextGramWeight
     }
 
     /// 每个音节位置的读音假设（正解 + 模糊音 + 漏敲多敲备选，带可信度）
@@ -102,19 +108,23 @@ public struct SentenceComposer {
     }
 
     /// Viterbi：整段音节 → 最优词序列（本地整句）。
-    public func compose(syllables: [Syllable]) -> String {
-        composeScored(syllables: syllables).sentence
+    public func compose(syllables: [Syllable], context: String = "") -> String {
+        composeScored(syllables: syllables, context: context).sentence
     }
 
     /// 带总分版本：边界歧义多路径间择优用。
     /// gram 存在时是 beam Viterbi：转移分取决于句面尾部，每个位置按尾部去重保留 beamWidth 条路径。
-    public func composeScored(syllables: [Syllable]) -> (sentence: String, score: Double) {
-        composeNBest(syllables: syllables, limit: 1).first ?? ("", -.infinity)
+    public func composeScored(syllables: [Syllable], context: String = "") -> (sentence: String, score: Double) {
+        composeNBest(syllables: syllables, limit: 1, context: context).first ?? ("", -.infinity)
     }
 
     /// n-best：回溯 dp[count] 的全部 beam 终态。尾部互异保证句面互异，无需去重。
     /// gram 缺失时单路径 Viterbi，最多 1 条。
-    public func composeNBest(syllables: [Syllable], limit: Int) -> [(sentence: String, score: Double)] {
+    /// context = 已上屏前文（纯汉字尾段，调用方过滤）：作 beam 初始尾部参与语法查询，
+    /// 「提」+jiao 时「提交」搭配能把 交 顶上来；空 = 句首（"#" 标记）。
+    public func composeNBest(
+        syllables: [Syllable], limit: Int, context: String = ""
+    ) -> [(sentence: String, score: Double)] {
         let count = syllables.count
         guard count > 0 else { return [] }
         struct Cell {
@@ -133,7 +143,8 @@ public struct SentenceComposer {
         // λ 自动补回，保持"词多词少"的偏好与无 gram 时一致（λ16 + 0.3×6 ≈ 评测最优的 18）
         let effectiveLambda = lambda + (gram.map { gramWeight * -$0.penalties.nonCollocation } ?? 0)
         var dp = [[Cell]](repeating: [], count: count + 1)
-        dp[0] = [Cell(score: 0, previous: 0, previousBeam: 0, word: "", tail: "#")]
+        let seedTail = context.isEmpty ? "#" : String(context.suffix(tailLimit))
+        dp[0] = [Cell(score: 0, previous: 0, previousBeam: 0, word: "", tail: seedTail)]
 
         for position in 0 ..< count where !dp[position].isEmpty {
             var edges = wordMatches(syllables: syllables, from: position)
@@ -160,7 +171,9 @@ public struct SentenceComposer {
                 for (beamIndex, cell) in dp[position].enumerated() {
                     var transition = 0.0
                     if let gram {
-                        transition = gramWeight * gram.score(
+                        // 种子转移（位置 0 且有上下文）独立权重；基线偏移每路径恰一次，排序可消
+                        let weight = (position == 0 && seedTail != "#") ? contextGramWeight : gramWeight
+                        transition = weight * gram.score(
                             context: cell.tail, word: edge.word, isRear: target == count
                         )
                     }
@@ -231,6 +244,10 @@ public final class PinyinEngine {
     public var gramWeight: Double = 0.3 {
         didSet { composer?.gramWeight = gramWeight }
     }
+    /// 已上屏上下文种子转移权重（见 SentenceComposer.contextGramWeight）
+    public var contextGramWeight: Double = 1.5 {
+        didSet { composer?.contextGramWeight = contextGramWeight }
+    }
     /// beam 宽度（gram 未安装时恒为 1）
     public var beamWidth: Int = 8 {
         didSet { composer?.beamWidth = beamWidth }
@@ -262,7 +279,8 @@ public final class PinyinEngine {
         composer = lexicon.map {
             SentenceComposer(
                 lexicon: $0, gram: gram, gramWeight: gramWeight,
-                lambda: lambda, singleCharDamp: singleCharDamp
+                lambda: lambda, singleCharDamp: singleCharDamp,
+                contextGramWeight: contextGramWeight
             )
         }
         composer?.userScore = userScoreProvider
@@ -294,8 +312,13 @@ public final class PinyinEngine {
         public var localNBest: [String] = []
     }
 
-    public func analyze(_ raw: String, fuzzyRuleIDs: Set<String> = FuzzyRule.defaultEnabled) -> Result {
+    /// context = 已上屏光标前文（可含任意文本）：取末尾连续汉字段作语法查询种子，
+    /// 整句 beam 与词候选排序共用。空 = 句首行为，与旧版逐位一致。
+    public func analyze(
+        _ raw: String, fuzzyRuleIDs: Set<String> = FuzzyRule.defaultEnabled, context: String = ""
+    ) -> Result {
         let segments = PinyinSegmenter.segment(raw, enabledFuzzyRuleIDs: fuzzyRuleIDs)
+        let contextSeed = Self.trailingHan(context)
         guard let composer else {
             return Result(segments: segments, localSentence: nil, wordCandidates: [])
         }
@@ -316,9 +339,9 @@ public final class PinyinEngine {
                 pinyinSegmentCount += 1
                 let variants = PinyinSegmenter.boundaryVariants(of: syllables, enabledFuzzyRuleIDs: fuzzyRuleIDs)
                 alternatives += variants.map { $0.map(\.text).joined(separator: " ") }
-                var merged = composer.composeNBest(syllables: syllables, limit: 8)
+                var merged = composer.composeNBest(syllables: syllables, limit: 8, context: contextSeed)
                 for variant in variants {
-                    merged += composer.composeNBest(syllables: variant, limit: 8)
+                    merged += composer.composeNBest(syllables: variant, limit: 8, context: contextSeed)
                 }
                 merged.sort { $0.score > $1.score }
                 var seen = Set<String>()
@@ -377,9 +400,17 @@ public final class PinyinEngine {
             // - 单字：多音节输入下高频单字（种/总）不该挤在整词中间；
             //   单音节输入全员同罚，顺序不变
             func displayRank(_ candidate: WordCandidate) -> Double {
-                candidate.score + Double(candidate.syllableCount) * 4
+                var rank = candidate.score + Double(candidate.syllableCount) * 4
                     - (candidate.usedFuzzy ? 2.5 : 0)
                     - (candidate.syllableCount == 1 ? 2.5 : 0)
+                // 上下文搭配加成：与整句 beam 的种子转移同一权重，减 nonCollocation 归零基线
+                // ——无搭配的候选排序与无上下文时完全一致（「提」后 jiao：交 顶上，叫/教 不动）
+                if !contextSeed.isEmpty, let gram {
+                    rank += contextGramWeight
+                        * (gram.score(context: contextSeed, word: candidate.word, isRear: false)
+                            - gram.penalties.nonCollocation)
+                }
+                return rank
             }
             let ranked = matches.sorted { displayRank($0) > displayRank($1) }
             // 简拼 vs 全拼的先后：全拼解析全程无需纠错修复 → 用户在打全拼，简拼靠后；
@@ -417,20 +448,33 @@ public final class PinyinEngine {
         )
     }
 
+    /// 已上屏前文 → 语法查询种子：末尾连续汉字段（gram key 纯汉字，标点/英文断开
+    /// 即按句中新起处理），封顶 8 字（查询只用尾部 collocationMaxLength−1 字）。
+    static func trailingHan(_ text: String) -> String {
+        var chars: [Character] = []
+        for char in text.reversed() {
+            guard char.isChineseCharacter, chars.count < 8 else { break }
+            chars.append(char)
+        }
+        return String(chars.reversed())
+    }
+
     /// 本地整句 n-best（评测/重排实验用）：单一拼音段时回溯 beam 终态并合并边界变体；
     /// 混输等其他形态退化为 [localSentence]。分数跨变体可比（同一打分体系）。
     public func localNBest(
-        _ raw: String, fuzzyRuleIDs: Set<String> = FuzzyRule.defaultEnabled, limit: Int = 8
+        _ raw: String, fuzzyRuleIDs: Set<String> = FuzzyRule.defaultEnabled, limit: Int = 8,
+        context: String = ""
     ) -> [(sentence: String, score: Double)] {
         guard let composer else { return [] }
         let segments = PinyinSegmenter.segment(raw, enabledFuzzyRuleIDs: fuzzyRuleIDs)
         guard segments.count == 1, case .pinyin(let syllables) = segments[0].kind else {
-            let fallback = analyze(raw, fuzzyRuleIDs: fuzzyRuleIDs).localSentence
+            let fallback = analyze(raw, fuzzyRuleIDs: fuzzyRuleIDs, context: context).localSentence
             return fallback.map { [($0, 0)] } ?? []
         }
-        var merged = composer.composeNBest(syllables: syllables, limit: limit)
+        let contextSeed = Self.trailingHan(context)
+        var merged = composer.composeNBest(syllables: syllables, limit: limit, context: contextSeed)
         for variant in PinyinSegmenter.boundaryVariants(of: syllables, enabledFuzzyRuleIDs: fuzzyRuleIDs) {
-            merged += composer.composeNBest(syllables: variant, limit: limit)
+            merged += composer.composeNBest(syllables: variant, limit: limit, context: contextSeed)
         }
         var seen = Set<String>()
         var results: [(sentence: String, score: Double)] = []
